@@ -35,7 +35,11 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write  # for npm provenance
+      # NOTE: we'll re-add `id-token: write` when we re-enable `--provenance`.
+      # Provenance requires the source repo visibility to be recognized as
+      # "public" by npm at publish time; a flip from private-to-public can
+      # leave a transient state where npm rejects the attestation. For now,
+      # publish without provenance. Re-enable around 0.1.0 stable.
     steps:
       - uses: actions/checkout@v4
 
@@ -47,8 +51,6 @@ jobs:
       - run: npm ci
       - run: npm run build
 
-      # Provenance attests that this build came from THIS repo + THIS workflow,
-      # visible on the npm package page. Good trust signal for a crypto lib.
-      - run: npm publish --provenance
+      - run: npm publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
