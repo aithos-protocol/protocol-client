@@ -1,6 +1,6 @@
 {
   "name": "@aithos/protocol-client",
-  "version": "0.1.0-alpha.1",
+  "version": "0.1.0-alpha.2",
   "description": "Aithos protocol client — env-agnostic TypeScript implementation of signed identities, mandates, and ethos editions.",
   "keywords": [
     "aithos",
@@ -26,13 +26,13 @@
   "type": "module",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
     },
     "./package.json": "./package.json"
   },
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
   "files": [
     "dist/**/*.js",
     "dist/**/*.d.ts",
