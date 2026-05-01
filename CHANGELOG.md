@@ -5,6 +5,20 @@ All notable changes to `@aithos/protocol-client` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this package adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-alpha.7] — 2026-05-01
+
+### Fixed
+- `package.json` `repository.url` and `bugs.url` now point at
+  `github.com/aithos-protocol/protocol-client` (the canonical org-level
+  repo). Previous releases lingered on `github.com/Math1987/protocol-client`
+  from a transient stage of the move into the `aithos-protocol` org.
+
+### Documentation
+- README "Status" section: clarified that during the alpha phase the npm
+  `latest` tag tracks the most recent alpha so the package page reflects
+  current code (license, deps, README). Once `0.1.0` stable ships, `latest`
+  moves to the stable line and pre-releases remain available under `@alpha`.
+
 ## [0.1.0-alpha.6] — 2026-04-30
 
 ### License

@@ -1,6 +1,6 @@
 {
   "name": "@aithos/protocol-client",
-  "version": "0.1.0-alpha.6",
+  "version": "0.1.0-alpha.7",
   "description": "Aithos protocol client — env-agnostic TypeScript implementation of signed identities, mandates, and ethos editions.",
   "keywords": [
     "aithos",
@@ -18,10 +18,10 @@
   "homepage": "https://aithos.be",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Math1987/protocol-client.git"
+    "url": "git+https://github.com/aithos-protocol/protocol-client.git"
   },
   "bugs": {
-    "url": "https://github.com/Math1987/protocol-client/issues"
+    "url": "https://github.com/aithos-protocol/protocol-client/issues"
   },
   "type": "module",
   "exports": {

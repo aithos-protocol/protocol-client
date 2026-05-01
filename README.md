@@ -13,8 +13,10 @@ mandates, and a JSON-RPC client for `api.aithos.be`.
 ## Status
 
 **Alpha** — API surface likely to shift until 0.1.0 stable. Use at your own
-risk for production. Everything is tagged `alpha` on npm to keep `latest`
-reserved for the stable release.
+risk for production. During the alpha phase, the npm `latest` tag tracks the
+most recent alpha release so the package page reflects the current code; once
+`0.1.0` ships, `latest` will move to the stable line and pre-releases will
+remain available under `@alpha`.
 
 ## Install
 
