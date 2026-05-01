@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mathieu Colla
+
 // Tests for parseConnectRequest + inferActorSphere — the wire shape
 // for the extension ↔ host onboarding handshake.
 

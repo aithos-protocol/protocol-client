@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mathieu Colla
+
 // RFC 8785 JSON Canonicalization Scheme (JCS) — minimal implementation.
 //
 // Ported from @aithos/protocol-core's `canonical.ts`. Produces the exact

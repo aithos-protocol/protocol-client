@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mathieu Colla
+
 // Client-side mandate signing.
 //
 // Mirrors protocol-core's `createMandate` in a browser-safe form: no

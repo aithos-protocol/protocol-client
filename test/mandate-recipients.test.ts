@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mathieu Colla
+
 // mandateToRecipients applies impliedRead — a write.X scope must
 // produce a recipient for X, otherwise the delegate can't decrypt the
 // zone it's supposed to write to.

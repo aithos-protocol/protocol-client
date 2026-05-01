@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mathieu Colla
+
 // Onboarding orchestration — browser-side.
 //
 // Given a handle, display name, and first public section body, this module:

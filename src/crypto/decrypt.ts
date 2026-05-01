@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mathieu Colla
+
 // Zone decryption — browser side.
 //
 // Implements the reader half of the §5 envelope format used by

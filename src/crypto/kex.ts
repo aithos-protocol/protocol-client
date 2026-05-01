@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mathieu Colla
+
 // Key-agreement (X25519) derivation + HKDF helper.
 //
 // Given an Ed25519 seed we can derive an X25519 secret usable for

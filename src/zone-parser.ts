@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mathieu Colla
+
 // Parse the rendered public-zone markdown back into a structured ZoneDoc.
 //
 // Inverse of `renderPublicMarkdown` in lib/crypto/manifest.ts. The on-disk

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mathieu Colla
+
 // Crypto round-trip sanity tests.
 //
 // The whole package is a cryptographic client — if these don't pass,

@@ -52,14 +52,15 @@ The package is organized around four concerns:
 
 ## License
 
-[Business Source License 1.1](./LICENSE) with a four-year change date to
-Apache License 2.0 (2030-04-24). You may use this package in production
-for any purpose except to provide a hosted or managed service that
-competes with Aithos's hosted platform. See `LICENSE` for the full text
-and `Additional Use Grant` for precise terms.
+[Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0). See [LICENSE](./LICENSE).
 
-For commercial licensing outside the default grant, contact
-`licensing@aithos.be`.
+The Aithos protocol specification (in the [`aithos-protocol`](https://github.com/aithos-protocol/aithos-protocol)
+repo) is under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
+
+This package was previously released under BUSL-1.1 (versions `0.1.0-alpha.1`
+through `0.1.0-alpha.5`). Those versions remain under BUSL-1.1 for anyone who
+already obtained them; from `0.1.0-alpha.6` onward, all releases are
+Apache-2.0 — irrevocably for the `0.x` line.
 
 ## Contributing
 

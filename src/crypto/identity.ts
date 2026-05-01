@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mathieu Colla
+
 // In-browser identity creation.
 //
 // Mirrors @aithos/protocol-core's `createIdentity`, `buildDidDocument` and

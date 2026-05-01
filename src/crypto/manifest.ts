@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mathieu Colla
+
 // First-edition manifest builder — browser-side, MVP public-only.
 //
 // Mirrors the portion of @aithos/protocol-core's `ethos.ts` that we need

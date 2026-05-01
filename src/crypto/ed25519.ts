@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mathieu Colla
+
 // Ed25519 primitives, browser-side.
 //
 // We use `@noble/ed25519` directly (pure JS, ~4KB gzipped) instead of the

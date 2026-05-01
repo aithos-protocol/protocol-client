@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mathieu Colla
+
 // High-level orchestrator for editing a live ethos.
 //
 // Takes the authenticated identity (from the keystore), fetches the current
