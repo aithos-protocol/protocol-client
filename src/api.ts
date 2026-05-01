@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mathieu Colla
+
 // Thin JSON-RPC 2.0 client for the Aithos platform reads endpoint.
 //
 // All read primitives (§10.5) are anonymous, so we just POST with the

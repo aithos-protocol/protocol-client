@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mathieu Colla
+
 // Wire types for the JSON-RPC responses. Subset of what the server returns —
 // we only declare the fields the UI actually reads. Stays decoupled from
 // @aithos/protocol-core so the app bundle doesn't balloon.

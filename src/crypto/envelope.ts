@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mathieu Colla
+
 // Signed envelope §11.2 — browser side.
 //
 // A POST to `/mcp/primitives/write` carries `params._envelope` alongside

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mathieu Colla
+
 // Zone encryption — the writer half of §5 envelope format.
 //
 // Mirrors @aithos/protocol-core's `encryptZone` + `wrapDek`. Every

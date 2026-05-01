@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mathieu Colla
+
 // End-to-end mint of a delegate bundle.
 //
 // Given a connected owner identity + a scope set + a TTL, this:

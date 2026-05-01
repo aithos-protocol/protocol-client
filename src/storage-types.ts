@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mathieu Colla
+
 // Storage-shape contracts for identity and delegate records.
 //
 // These types describe the protocol-level content a keystore implementation

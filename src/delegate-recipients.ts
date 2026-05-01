@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mathieu Colla
+
 // Discover active delegate recipients for a given owner + zone.
 //
 // Every time the owner publishes a new edition, we want to include every

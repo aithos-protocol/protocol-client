@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mathieu Colla
+
 // Small encoding helpers for Aithos crypto. Pure JS, browser-safe.
 //
 //   - base64url      — used for proof values and signatures in JSON

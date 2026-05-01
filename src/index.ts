@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mathieu Colla
+
 // @aithos/protocol-client — public API surface.
 //
 // Alpha phase: we re-export the full module surface to let consumers

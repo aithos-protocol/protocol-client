@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mathieu Colla
+
 // Helpers for rendering and parsing DIDs and zone bytes.
 
 /** Strip the fragment off a DID URL. */

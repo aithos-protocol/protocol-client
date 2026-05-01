@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Mathieu Colla
+
 // Smoke test — compiles, imports, runs.
 //
 // The point of this test in alpha.0 is to exercise the end-to-end pipeline:
