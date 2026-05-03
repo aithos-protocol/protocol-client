@@ -21,6 +21,7 @@ import {
 } from "./crypto/manifest.js";
 import { buildSignedEnvelope } from "./crypto/envelope.js";
 import { readRpc } from "./api.js";
+import { writeEndpoint } from "./endpoints.js";
 import {
   tryDecryptAsDelegate,
   tryDecryptAsOwner,
@@ -40,9 +41,6 @@ import {
   type DelegateRecipientsByZone,
 } from "./delegate-recipients.js";
 import type { SignedMandate } from "./crypto/mandate.js";
-
-const WRITE_ENDPOINT =
-  "https://api.aithos.be/mcp/primitives/write";
 
 export interface EditSnapshot {
   readonly manifest: Manifest;
@@ -451,14 +449,14 @@ export async function publishZoneEdit(
   const params = { manifest: built.manifest, zones };
   const envelope = buildSignedEnvelope({
     iss: browserId.did,
-    aud: WRITE_ENDPOINT,
+    aud: writeEndpoint(),
     method: "aithos.publish_ethos_edition",
     verificationMethod: `${browserId.did}#public`,
     params,
     signer: browserId.public,
   });
 
-  const res = await fetch(WRITE_ENDPOINT, {
+  const res = await fetch(writeEndpoint(), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -615,7 +613,7 @@ export async function publishPublicZoneAsDelegate(
   const params = { manifest: built.manifest, zones };
   const envelope = buildSignedEnvelope({
     iss: snapshot.manifest.subject_did,
-    aud: WRITE_ENDPOINT,
+    aud: writeEndpoint(),
     method: "aithos.publish_ethos_edition",
     verificationMethod: delegate.granteePubkeyMultibase,
     params,
@@ -628,7 +626,7 @@ export async function publishPublicZoneAsDelegate(
   // call.
   delegateSeed.fill(0);
 
-  const res = await fetch(WRITE_ENDPOINT, {
+  const res = await fetch(writeEndpoint(), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -763,7 +761,7 @@ export async function publishPrivateZoneAsDelegate(
   const params = { manifest: built.manifest, zones };
   const envelope = buildSignedEnvelope({
     iss: subjectDid,
-    aud: WRITE_ENDPOINT,
+    aud: writeEndpoint(),
     method: "aithos.publish_ethos_edition",
     verificationMethod: delegate.granteePubkeyMultibase,
     params,
@@ -772,7 +770,7 @@ export async function publishPrivateZoneAsDelegate(
   });
   delegateSeed.fill(0);
 
-  const res = await fetch(WRITE_ENDPOINT, {
+  const res = await fetch(writeEndpoint(), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({

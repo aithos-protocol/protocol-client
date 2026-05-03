@@ -17,9 +17,19 @@
 
 import { buildSignedEnvelope } from "./crypto/envelope.js";
 import type { BrowserIdentity } from "./crypto/identity.js";
+import {
+  DEFAULT_ENDPOINTS,
+  computeInvokeEndpoint,
+} from "./endpoints.js";
 
-/** Default base URL for the Aithos compute proxy. */
-export const DEFAULT_COMPUTE_ENDPOINT = "https://compute.aithos.be";
+/**
+ * Default base URL for the Aithos compute proxy.
+ *
+ * Re-exported as a stable diagnostic constant; the lib resolves the actual
+ * target through the endpoint config so it stays consistent if the
+ * configuration is overridden internally.
+ */
+export const DEFAULT_COMPUTE_ENDPOINT: string = DEFAULT_ENDPOINTS.compute;
 
 export interface ComputeMessage {
   readonly role: "user" | "assistant";
@@ -110,8 +120,9 @@ export class ComputeError extends Error {
 export async function invokeBedrock(
   args: InvokeBedrockArgs,
 ): Promise<InvokeBedrockResult> {
-  const baseUrl = args.endpoint ?? DEFAULT_COMPUTE_ENDPOINT;
-  const fullUrl = `${baseUrl}/v1/invoke`;
+  const fullUrl = args.endpoint
+    ? `${args.endpoint}/v1/invoke`
+    : computeInvokeEndpoint();
   const idempotencyKey = args.idempotencyKey ?? generateIdempotencyKey();
 
   // Params that `params_hash` commits to. Optional fields are conditionally

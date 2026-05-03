@@ -5,6 +5,36 @@ All notable changes to `@aithos/protocol-client` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this package adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-alpha.9] — 2026-05-03
+
+### Changed (internal — no public API change)
+- **Centralized endpoint configuration** in `src/endpoints.ts`. The lib's
+  HTTP targets (`api`, `cdn`, `compute`, `auth`) now live in a single mutable
+  table, with public read-only access via `getEndpoints()` /
+  `DEFAULT_ENDPOINTS` and internal-only overrides via `_setEndpoints` /
+  `_resetEndpoints` (NOT re-exported from the package barrel).
+- All consumers refactored to use the centralized table via URL builder
+  helpers (`readEndpoint`, `writeEndpoint`, `converseEndpoint`,
+  `computeInvokeEndpoint`):
+  - `api.ts` — `getEndpoints().api` resolved per-call
+  - `onboarding.ts`, `editor.ts`, `mandate-mint.ts` — `writeEndpoint()`
+  - `compute.ts` — `computeInvokeEndpoint()` (default) with per-call
+    `endpoint` override preserved
+- `DEFAULT_COMPUTE_ENDPOINT` (alpha.8 export) now aliases
+  `DEFAULT_ENDPOINTS.compute` for consistency. Stable.
+
+### Why
+Posture set in PLATFORM-COMPUTE-DESIGN.md §"Posture open-source et contrat
+de stabilité": the lib is open-source, by default plugged on Aithos. The
+endpoint table lives in a separable module so a future public configuration
+API for self-hosting is a non-breaking addition. **No public configurability
+is exposed yet** — that decision is reserved.
+
+### Tests
+- 8 new tests for `endpoints.ts` (defaults, URL builders, overrides,
+  immutability of `DEFAULT_ENDPOINTS`).
+- All existing tests still pass (49 total).
+
 ## [0.1.0-alpha.8] — 2026-05-03
 
 ### Added

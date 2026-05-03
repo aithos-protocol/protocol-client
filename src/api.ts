@@ -7,8 +7,7 @@
 // ambient fetch. Errors come back in the `error` field; we surface them as
 // thrown `AithosRpcError` so React routes can branch on `.code` (§10.9).
 
-const DEFAULT_ENDPOINT =
-  "https://api.aithos.be";
+import { getEndpoints } from "./endpoints.js";
 
 export interface JsonRpcErrorShape {
   readonly code: number;
@@ -38,7 +37,7 @@ export async function readRpc<T>(
   params: unknown,
   opts?: RpcOptions,
 ): Promise<T> {
-  const base = opts?.baseUrl ?? DEFAULT_ENDPOINT;
+  const base = opts?.baseUrl ?? getEndpoints().api;
   const res = await fetch(`${base}/mcp/primitives/read`, {
     method: "POST",
     headers: { "content-type": "application/json" },
