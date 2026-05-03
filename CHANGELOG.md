@@ -5,6 +5,27 @@ All notable changes to `@aithos/protocol-client` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this package adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-alpha.8] — 2026-05-03
+
+### Added
+- **Compute proxy client** (`src/compute.ts`) — single-shot Bedrock invocation
+  through `compute.aithos.be/v1/invoke`. Builds a signed envelope with the
+  user's public-sphere key, posts JSON-RPC with `mandate_id` and `app_did`,
+  parses the proxy's response (content + usage + billing metadata).
+  - Public surface: `invokeBedrock`, `ComputeError`, `DEFAULT_COMPUTE_ENDPOINT`,
+    types `ComputeMessage`, `InvokeBedrockArgs`, `InvokeBedrockResult`,
+    `StopReason`.
+  - Errors are surfaced as `ComputeError` with stable `code` tags so callers
+    can branch on `network` / `http` / `empty` / JSON-RPC error codes.
+  - Multi-turn agentic loops with native tool calling are deferred to a
+    follow-up release; for now apps drive the loop client-side by calling
+    `invokeBedrock` per turn.
+- 9 unit tests for the compute client (mocked `fetch`, asserts envelope
+  structure, params shape, error mapping, abort signal propagation).
+
+### Documentation
+- Bumped `VERSION` constant in `src/index.ts`.
+
 ## [0.1.0-alpha.7] — 2026-05-01
 
 ### Fixed

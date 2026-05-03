@@ -20,7 +20,7 @@
 //   - `Manifest`         → types.ts (wire-format). crypto/manifest's authoring
 //                          structure stays internal; its builders are exported.
 
-export const VERSION = "0.1.0-alpha.5";
+export const VERSION = "0.1.0-alpha.8";
 
 // --- API client (JSON-RPC 2.0 to api.aithos.be) ---
 export * from "./api.js";
@@ -51,6 +51,9 @@ export * from "./mandate-mint.js";
 
 // --- Onboarding (create identity, publish first edition) ---
 export * from "./onboarding.js";
+
+// --- Compute proxy client (Bedrock invocation via compute.aithos.be) ---
+export * from "./compute.js";
 
 // --- Cryptography primitives ---
 export * from "./crypto/canonical.js";
