@@ -29,10 +29,8 @@ import {
 } from "./crypto/mandate.js";
 import type { Sphere } from "./crypto/identity.js";
 import { buildSignedEnvelope } from "./crypto/envelope.js";
+import { writeEndpoint as resolveWriteEndpoint } from "./endpoints.js";
 import type { StoredIdentity } from "./storage-types.js";
-
-const WRITE_ENDPOINT =
-  "https://api.aithos.be/mcp/primitives/write";
 
 const DELEGATE_BUNDLE_VERSION = "0.1.0";
 
@@ -112,7 +110,7 @@ export async function signAndPublishMandate(
   args: SignAndPublishMandateArgs,
 ): Promise<SignedMandate> {
   const browserId = browserIdentityFromStored(args.owner);
-  const writeEndpoint = args.writeEndpoint ?? WRITE_ENDPOINT;
+  const targetWriteEndpoint = args.writeEndpoint ?? resolveWriteEndpoint();
 
   let mandate: SignedMandate;
   try {
@@ -131,14 +129,14 @@ export async function signAndPublishMandate(
   const params = { mandate };
   const envelope = buildSignedEnvelope({
     iss: browserId.did,
-    aud: writeEndpoint,
+    aud: targetWriteEndpoint,
     method: "aithos.publish_mandate",
     verificationMethod: `${browserId.did}#root`,
     params,
     signer: browserId.root,
   });
 
-  const res = await fetch(writeEndpoint, {
+  const res = await fetch(targetWriteEndpoint, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({

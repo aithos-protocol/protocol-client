@@ -13,3 +13,6 @@ dist/
 
 # npm
 .npmrc
+
+# Smoke-test debris (per-run identity / recovery bundles)
+smoke-recovery-*.json

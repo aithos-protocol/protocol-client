@@ -23,9 +23,7 @@ import {
   type Manifest,
 } from "./crypto/manifest.js";
 import { buildSignedEnvelope } from "./crypto/envelope.js";
-
-const WRITE_ENDPOINT =
-  "https://api.aithos.be/mcp/primitives/write";
+import { writeEndpoint } from "./endpoints.js";
 
 export interface OnboardArgs {
   readonly handle: string;
@@ -83,7 +81,7 @@ export async function runOnboarding(args: OnboardArgs): Promise<OnboardResult> {
   };
   const identityEnv = buildSignedEnvelope({
     iss: identity.did,
-    aud: WRITE_ENDPOINT,
+    aud: writeEndpoint(),
     method: "aithos.publish_identity",
     verificationMethod: `${identity.did}#root`,
     params: publishIdentityParams,
@@ -113,7 +111,7 @@ export async function runOnboarding(args: OnboardArgs): Promise<OnboardResult> {
   };
   const editionEnv = buildSignedEnvelope({
     iss: identity.did,
-    aud: WRITE_ENDPOINT,
+    aud: writeEndpoint(),
     method: "aithos.publish_ethos_edition",
     verificationMethod: `${identity.did}#public`,
     params: editionParams,
@@ -163,7 +161,7 @@ async function callWrite(
 ): Promise<void> {
   let res: Response;
   try {
-    res = await fetch(WRITE_ENDPOINT, {
+    res = await fetch(writeEndpoint(), {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
