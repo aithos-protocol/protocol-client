@@ -93,7 +93,8 @@ export function converseEndpoint(): string {
   return `${getEndpoints().api}/mcp/converse`;
 }
 
-/** Compute proxy invocation endpoint: `${compute}/v1/invoke`. */
-export function computeInvokeEndpoint(): string {
-  return `${getEndpoints().compute}/v1/invoke`;
-}
+// NOTE: `computeInvokeEndpoint()` was removed in alpha.10 alongside
+// `src/compute.ts`. The compute proxy URL composition now lives in
+// `@aithos/sdk`. The `compute` field on `AithosEndpoints` is preserved
+// here as read-only diagnostic surface (and for callers who configure
+// the SDK by reading `getEndpoints().compute`).

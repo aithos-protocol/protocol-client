@@ -5,7 +5,45 @@ All notable changes to `@aithos/protocol-client` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this package adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.0-alpha.9] — 2026-05-03
+## [0.1.0-alpha.10] — 2026-05-05
+
+### Removed (BREAKING for direct callers; mitigated by `@aithos/sdk`)
+- **`src/compute.ts` and all its public exports** — `invokeBedrock`,
+  `ComputeError`, `DEFAULT_COMPUTE_ENDPOINT`, types `ComputeMessage`,
+  `InvokeBedrockArgs`, `InvokeBedrockResult`, `StopReason`.
+- The `computeInvokeEndpoint()` helper from `src/endpoints.ts` is also
+  removed — it was only used by the deleted `compute.ts`.
+- Test file `test/compute.test.ts` removed.
+
+### Why
+`compute.ts` was a temporary lodging place for the Bedrock proxy client.
+Its proper home is `@aithos/sdk` (which now ships its own implementation
+in `0.1.0-alpha.1+`). Keeping a duplicate in protocol-client invited
+divergence; this release retires it cleanly.
+
+### Migration
+Apps invoking Bedrock should switch to `@aithos/sdk`:
+
+```diff
+- import { invokeBedrock } from "@aithos/protocol-client";
+- const out = await invokeBedrock({ identity, appDid, mandateId, … });
+
++ import { AithosSDK } from "@aithos/sdk";
++ const sdk = new AithosSDK({ identity, appDid });
++ const out = await sdk.compute.invokeBedrock({ mandateId, … });
+```
+
+The two are wire-compatible (both POST a §11 signed envelope to
+`compute.aithos.be/v1/invoke`); only the package surface and the SDK's
+namespaced ergonomics differ.
+
+### Note on alpha.8 / alpha.9
+Both versions exist as commits in this repo's git history but were never
+published to npm. alpha.7 (the latest published) does not contain
+`compute.ts`, so for npm users this is a clean continuation —
+`alpha.7 → alpha.10` with no deprecation cycle to navigate.
+
+## [0.1.0-alpha.9] — 2026-05-03 (unpublished)
 
 ### Changed (internal — no public API change)
 - **Centralized endpoint configuration** in `src/endpoints.ts`. The lib's

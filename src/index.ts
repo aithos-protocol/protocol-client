@@ -20,7 +20,7 @@
 //   - `Manifest`         → types.ts (wire-format). crypto/manifest's authoring
 //                          structure stays internal; its builders are exported.
 
-export const VERSION = "0.1.0-alpha.9";
+export const VERSION = "0.1.0-alpha.10";
 
 // --- API client (JSON-RPC 2.0 to api.aithos.be) ---
 export * from "./api.js";
@@ -52,8 +52,9 @@ export * from "./mandate-mint.js";
 // --- Onboarding (create identity, publish first edition) ---
 export * from "./onboarding.js";
 
-// --- Compute proxy client (Bedrock invocation via compute.aithos.be) ---
-export * from "./compute.js";
+// NOTE: Bedrock compute proxy client lives in `@aithos/sdk` since
+// alpha.10. This package keeps its scope strictly to crypto, identity,
+// mandates, and ethos editions; consult the SDK for `invokeBedrock`.
 
 // --- Cryptography primitives ---
 export * from "./crypto/canonical.js";

@@ -16,7 +16,6 @@ import {
   DEFAULT_ENDPOINTS,
   _resetEndpoints,
   _setEndpoints,
-  computeInvokeEndpoint,
   converseEndpoint,
   getEndpoints,
   readEndpoint,
@@ -49,7 +48,6 @@ test("URL builders compose the correct paths against defaults", () => {
   assert.equal(readEndpoint(), "https://api.aithos.be/mcp/primitives/read");
   assert.equal(writeEndpoint(), "https://api.aithos.be/mcp/primitives/write");
   assert.equal(converseEndpoint(), "https://api.aithos.be/mcp/converse");
-  assert.equal(computeInvokeEndpoint(), "https://compute.aithos.be/v1/invoke");
 });
 
 /* -------------------------------------------------------------------------- */
@@ -69,7 +67,6 @@ test("_setEndpoints overrides individual endpoints (api only)", () => {
 
   // Untouched.
   assert.equal(getEndpoints().compute, DEFAULT_ENDPOINTS.compute);
-  assert.equal(computeInvokeEndpoint(), "https://compute.aithos.be/v1/invoke");
 
   _resetEndpoints();
 });
@@ -79,10 +76,6 @@ test("_setEndpoints can override compute alone", () => {
   _setEndpoints({ compute: "https://compute-staging.example.com" });
 
   assert.equal(getEndpoints().compute, "https://compute-staging.example.com");
-  assert.equal(
-    computeInvokeEndpoint(),
-    "https://compute-staging.example.com/v1/invoke",
-  );
   assert.equal(getEndpoints().api, DEFAULT_ENDPOINTS.api);
 
   _resetEndpoints();
