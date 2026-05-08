@@ -93,16 +93,9 @@ export function converseEndpoint(): string {
   return `${getEndpoints().api}/mcp/converse`;
 }
 
-// NOTE: `computeInvokeEndpoint()` was conceptually retired in alpha.10
-// alongside the move of compute logic to `@aithos/sdk`. The `compute`
-// field on `AithosEndpoints` is preserved as a diagnostic surface ; the
-// helper below is kept around so the orphan `src/compute.ts` (legacy
-// browser client, no longer exported from `index.ts`) still type-checks
-// until it can be physically removed by a maintainer.
-//
-// Apps must NOT import this — use `@aithos/sdk`'s `ComputeNamespace`.
-
-/** @deprecated kept for legacy `src/compute.ts` only — not exported. */
-export function computeInvokeEndpoint(): string {
-  return `${getEndpoints().compute}/v1/bedrock`;
-}
+// NOTE: `computeInvokeEndpoint()` was retired in alpha.10 alongside the
+// move of compute logic to `@aithos/sdk`. The `compute` field on
+// `AithosEndpoints` is preserved as a diagnostic surface — apps that
+// configure the SDK can read `getEndpoints().compute` for diagnostics —
+// but the URL composition itself lives in `@aithos/sdk`'s
+// `ComputeNamespace`. Don't reintroduce a helper here.
