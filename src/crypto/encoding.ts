@@ -187,3 +187,40 @@ export function bytesToHex(bytes: Uint8Array): string {
   for (let i = 0; i < bytes.length; i++) out += bytes[i]!.toString(16).padStart(2, "0");
   return out;
 }
+
+/* ---------- base64 (standard alphabet, padding-stripped) ----------------- */
+
+// The Aithos auth API speaks **standard** base64 (not URL-safe) and strips
+// trailing `=` padding throughout. Decoders auto-pad so URL-safe and unpadded
+// inputs both parse. Distinct from {@link base64url} above, which is the
+// JOSE/JWT-friendly variant used inside ethos zone proofs.
+
+/**
+ * Encode bytes → standard base64, padding stripped.
+ *
+ * Used to marshal the `*_b64` fields the auth API expects on the wire :
+ * `auth_key_b64`, `auth_salt_b64`, `enc_salt_b64`, `blob_b64`,
+ * `blob_nonce_b64`. The auth Lambda decodes these tolerantly.
+ */
+export function bytesToB64(bytes: Uint8Array): string {
+  let bin = "";
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]!);
+  // btoa is available in browser globals and Node 16+ globals.
+  return btoa(bin).replace(/=+$/, "");
+}
+
+/**
+ * Decode a standard-base64 string → bytes. Restores `=` padding internally
+ * so URL-safe (`-`/`_`) or unpadded inputs also parse — useful when the
+ * server emits unpadded values per the API contract but a hand-crafted
+ * curl invocation included padding.
+ */
+export function b64ToBytes(s: string): Uint8Array {
+  const safe = s.replace(/-/g, "+").replace(/_/g, "/");
+  const pad = (4 - (safe.length % 4)) % 4;
+  const padded = safe + "=".repeat(pad);
+  const bin = atob(padded);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}

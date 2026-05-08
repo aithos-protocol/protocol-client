@@ -20,7 +20,7 @@
 //   - `Manifest`         → types.ts (wire-format). crypto/manifest's authoring
 //                          structure stays internal; its builders are exported.
 
-export const VERSION = "0.1.0-alpha.10";
+export const VERSION = "0.1.0-alpha.11";
 
 // --- API client (JSON-RPC 2.0 to api.aithos.be) ---
 export * from "./api.js";
@@ -60,6 +60,40 @@ export * from "./onboarding.js";
 export * from "./crypto/canonical.js";
 export * from "./crypto/ed25519.js";
 export * from "./crypto/encoding.js";
+
+// Argon2id KDF + AES-GCM blob primitives — used by @aithos/sdk's
+// password-based auth helpers (signIn, signUp). Apps that don't touch
+// the auth surface can ignore these.
+export {
+  DEFAULT_KDF,
+  ARGON2_KEY_BYTES,
+  ARGON2_SALT_BYTES,
+  argon2idKey,
+  deriveAuthAndEncKeys,
+  randomSalt,
+  zeroize,
+  type KdfParams,
+} from "./crypto/argon2id.js";
+
+export {
+  BLOB_KEY_BYTES,
+  BLOB_NONCE_BYTES,
+  encryptBlob,
+  decryptBlob,
+  randomNonce,
+} from "./crypto/blob.js";
+
+export {
+  BLOB_VERSION,
+  BlobFormatError,
+  buildBlobPlaintext,
+  hexToSeed,
+  parseBlob,
+  serializeBlob,
+  type BlobIdentity,
+  type BlobPlaintext,
+  type BlobSeeds,
+} from "./crypto/blob-format.js";
 
 // crypto/encrypt — exclude local SealedZone (canonical is from delegate-recipients).
 export {
