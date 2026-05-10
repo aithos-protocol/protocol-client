@@ -34,6 +34,17 @@ import type { StoredIdentity } from "./storage-types.js";
 
 const DELEGATE_BUNDLE_VERSION = "0.1.0";
 
+/**
+ * Default offset used by `mintDelegateBundle` and `signAndPublishMandate`
+ * when the caller doesn't supply an explicit `notBefore`. The mandate is
+ * signed with `not_before = now - <this many seconds>` so a server whose
+ * clock runs slightly behind the client doesn't reject the freshly-minted
+ * mandate as "not yet valid". Mirrors `MANDATE_CLOCK_SKEW_SECONDS_DEFAULT`
+ * on the protocol-core verifier — the two together give defense in depth
+ * against clock drift in either direction.
+ */
+export const MANDATE_NOTBEFORE_OFFSET_SECONDS_DEFAULT = 30;
+
 export interface MintArgs {
   readonly owner: StoredIdentity;
   readonly granteeId: string;
@@ -47,6 +58,14 @@ export interface MintArgs {
   readonly scopes: readonly string[];
   readonly ttlSeconds: number;
   readonly constraints?: MandateConstraints;
+  /**
+   * When the mandate becomes valid. Defaults to
+   * `new Date(Date.now() - MANDATE_NOTBEFORE_OFFSET_SECONDS_DEFAULT * 1000)`
+   * so a server whose clock runs slightly behind doesn't reject the
+   * fresh mandate as "not yet valid". Pass an explicit `Date` only if
+   * you want a different anchor (e.g. a far-future activation).
+   */
+  readonly notBefore?: Date;
 }
 
 export interface MintResult {
@@ -97,6 +116,12 @@ export interface SignAndPublishMandateArgs {
   readonly constraints?: MandateConstraints;
   /** Override the default `https://api.aithos.be/mcp/primitives/write`. */
   readonly writeEndpoint?: string;
+  /**
+   * When the mandate becomes valid. Defaults to
+   * `new Date(Date.now() - MANDATE_NOTBEFORE_OFFSET_SECONDS_DEFAULT * 1000)`
+   * — see {@link MANDATE_NOTBEFORE_OFFSET_SECONDS_DEFAULT}.
+   */
+  readonly notBefore?: Date;
 }
 
 /**
@@ -112,6 +137,13 @@ export async function signAndPublishMandate(
   const browserId = browserIdentityFromStored(args.owner);
   const targetWriteEndpoint = args.writeEndpoint ?? resolveWriteEndpoint();
 
+  // Default notBefore = now - 30s so a server whose clock runs slightly
+  // behind doesn't reject the freshly-minted mandate as "not yet valid".
+  // The caller can override with an explicit Date if needed.
+  const notBefore =
+    args.notBefore ??
+    new Date(Date.now() - MANDATE_NOTBEFORE_OFFSET_SECONDS_DEFAULT * 1000);
+
   let mandate: SignedMandate;
   try {
     mandate = signMandate({
@@ -121,6 +153,7 @@ export async function signAndPublishMandate(
       scopes: args.scopes,
       ttlSeconds: args.ttlSeconds,
       ...(args.constraints ? { constraints: args.constraints } : {}),
+      notBefore,
     });
   } catch (e) {
     throw new MintError("sign", (e as Error).message);
@@ -184,6 +217,7 @@ export async function mintDelegateBundle(args: MintArgs): Promise<MintResult> {
     scopes: args.scopes,
     ttlSeconds: args.ttlSeconds,
     ...(args.constraints ? { constraints: args.constraints } : {}),
+    ...(args.notBefore ? { notBefore: args.notBefore } : {}),
   });
 
   // 4. Package the bundle for the delegate.

@@ -5,6 +5,54 @@ All notable changes to `@aithos/protocol-client` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this package adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-alpha.13] — 2026-05-10
+
+### Fixed
+
+- **`mintDelegateBundle` and `signAndPublishMandate` now sign mandates
+  with `not_before = now - 30s` by default**, so a server whose clock
+  runs slightly behind the client doesn't reject the freshly-minted
+  mandate as `Mandate not yet valid`. Previously the underlying
+  `signMandate` accepted a `notBefore` arg but it wasn't threaded
+  through the higher-level mint chain — every mint used `Date.now()`,
+  which caused intermittent `-32040` rejections in production whenever
+  client/Lambda clock skew exceeded a few hundred ms.
+
+### Added
+
+- `notBefore?: Date` field on `MintArgs` (mintDelegateBundle) and
+  `SignAndPublishMandateArgs`. Caller can override the default offset
+  for advanced flows (delayed-activation mandates, deterministic tests,
+  etc.).
+- `MANDATE_NOTBEFORE_OFFSET_SECONDS_DEFAULT` exported constant (= 30,
+  matches the verifier's `MANDATE_CLOCK_SKEW_SECONDS_DEFAULT` in
+  `@aithos/protocol-core@>=0.5.2` so client and server are aligned).
+
+## [0.1.0-alpha.12] — 2026-05-10
+
+### Added
+
+- **`buildSignedFirstEditionFromSections({identity, signedDidDoc, publicSections})`**
+  — multi-section variant of `buildSignedFirstEdition`. Accepts an arbitrary
+  list of `Section[]` for the public zone of the first edition (height=1,
+  prev_hash=null), instead of forcing a single seed section via the
+  `publicTitle`/`publicBody` pair. Used by `@aithos/sdk@>=0.1.0-alpha.7`'s
+  first-`publish()` path so a user who staged N additions before their first
+  publish lands them all in one edition rather than getting forced to publish
+  twice.
+
+  `publicSections` MUST be non-empty (a manifest must declare at least one
+  zone). Encrypted-zone (circle / self) first editions remain unsupported by
+  this helper — publish them as a subsequent edition via
+  `buildSignedNextEdition`.
+
+### Changed
+
+- `buildSignedFirstEdition` is now a thin wrapper around
+  `buildSignedFirstEditionFromSections`. Public API and on-wire output are
+  unchanged: same byte-for-byte rendered markdown, same manifest shape,
+  same signature.
+
 ## [0.1.0-alpha.10] — 2026-05-05
 
 ### Removed (BREAKING for direct callers; mitigated by `@aithos/sdk`)

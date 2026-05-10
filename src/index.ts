@@ -20,7 +20,7 @@
 //   - `Manifest`         → types.ts (wire-format). crypto/manifest's authoring
 //                          structure stays internal; its builders are exported.
 
-export const VERSION = "0.1.0-alpha.11";
+export const VERSION = "0.1.0-alpha.13";
 
 // --- API client (JSON-RPC 2.0 to api.aithos.be) ---
 export * from "./api.js";
@@ -33,6 +33,21 @@ export * from "./did.js";
 
 // --- Wire-format types (canonical for DidDocument, Manifest) ---
 export * from "./types.js";
+
+// --- Endpoints (api / cdn / compute / auth resolution) ---
+//
+// Only the read-only surface is exposed: type, defaults, getter, URL
+// builders. The `_setEndpoints` / `_resetEndpoints` overrides remain
+// internal — see the comment in src/endpoints.ts about the future public
+// self-hosting configuration API.
+export {
+  type AithosEndpoints,
+  DEFAULT_ENDPOINTS,
+  getEndpoints,
+  converseEndpoint,
+  readEndpoint,
+  writeEndpoint,
+} from "./endpoints.js";
 
 // --- Storage contracts (what a keystore impl must produce/consume) ---
 export * from "./storage-types.js";
@@ -131,6 +146,7 @@ export {
   type BuildDelegatePublicEditionArgs,
   type BuildDelegatePublicEditionResult,
   type BuildFirstEditionArgs,
+  type BuildFirstEditionFromSectionsArgs,
   type BuildFirstEditionResult,
   type BuildNextEditionArgs,
   type BuildNextEditionResult,
@@ -142,6 +158,7 @@ export {
   type ZoneSignature,
   type ZoneWrap,
   buildSignedFirstEdition,
+  buildSignedFirstEditionFromSections,
   buildSignedNextEdition,
   buildSignedNextEditionAsDelegatePrivate,
   buildSignedNextEditionAsDelegatePublic,
