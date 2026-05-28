@@ -1,26 +1,39 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Mathieu Colla
 
-// First-edition manifest builder — browser-side, MVP public-only.
+// First-edition manifest builder — browser-side.
 //
 // Mirrors the portion of @aithos/protocol-core's `ethos.ts` that we need
 // to produce a first signed edition:
 //
-//   1. build a ZoneDoc = {sections: [...]}           (structured)
+//   1. build a public ZoneDoc = {sections: [...]}    (structured)
 //   2. sign the ZoneDoc with the public sphere key   → ZoneSignature
 //   3. render ZoneDoc to markdown (sha256_of_plaintext input)
 //   4. compute sha256 of the rendered bytes
-//   5. build Manifest + manifest.zones.public        (metadata)
-//   6. sign the canonical manifest with manifest_signature="" placeholder
-//   7. embed the final signature in manifest.integrity.manifest_signature
+//   5. (optional) seal circle / self zones via sealPrivateZone — same
+//      DEK + wrap machinery used by buildSignedNextEdition for height>=2,
+//      so a first edition can land both public and encrypted zones in a
+//      single height=1 publish.
+//   6. build Manifest + manifest.zones.{public, circle?, self?}
+//   7. sign the canonical manifest with manifest_signature="" placeholder
+//   8. embed the final signature in manifest.integrity.manifest_signature
 //
-// MVP simplifications:
-//   - only the public zone is included; circle/self are omitted from the
-//     manifest (our server handler is happy to skip missing zones)
-//   - no gamma log (manifest.gamma omitted); sections carry a synthetic
-//     gamma_ref that the server does not validate
+// Design notes:
+//   - The manifest is always signed by the `#public` sphere key, even when
+//     the user is only writing to circle / self. That's an intentional
+//     invariant: the public zone is the publicly resolvable surface of the
+//     identity, and its signing key is the same one that signs the manifest
+//     itself.
+//   - `publicSections` remains required and non-empty — the protocol spec
+//     would allow a missing public zone at height=1, but every resolution
+//     flow (handle lookup, did.json discovery, public crawl) assumes one,
+//     so we keep that invariant client-side. Callers that only have
+//     circle/self content to publish are expected to pass a sentinel
+//     public section (e.g. `aithos-init`) alongside.
+//   - No gamma log (manifest.gamma omitted); sections carry a synthetic
+//     gamma_ref that the server does not validate.
 //   - sha256_of_did_json is computed from the actual signed did.json JSON,
-//     matching what protocol-core would produce
+//     matching what protocol-core would produce.
 
 import { sha256 } from "@noble/hashes/sha2";
 import { x25519 } from "@noble/curves/ed25519";
@@ -126,46 +139,137 @@ export interface BuildFirstEditionArgs {
 export interface BuildFirstEditionResult {
   readonly manifest: Manifest;
   readonly publicMarkdownBytes: Uint8Array;
+  /**
+   * Sealed ciphertext bytes for the circle zone, present iff
+   * `circleSections` was passed to {@link buildSignedFirstEditionFromSections}.
+   * Pass to the server as `zones.circle.bytes_base64` in
+   * `aithos.publish_ethos_edition`.
+   */
+  readonly circleBytes?: Uint8Array;
+  /**
+   * Sealed ciphertext bytes for the self zone, present iff `selfSections`
+   * was passed.
+   */
+  readonly selfBytes?: Uint8Array;
 }
 
 /**
- * Build + sign the first edition. Returns the full signed manifest and the
- * rendered public.md bytes ready to upload to S3 via publish_ethos_edition.
+ * Build + sign the first edition with a single seed public section.
+ *
+ * Convenience wrapper around {@link buildSignedFirstEditionFromSections} for
+ * the onboarding flow that only needs one section to start. For full
+ * control over the initial public section list, use
+ * {@link buildSignedFirstEditionFromSections} directly.
  */
 export function buildSignedFirstEdition(
   args: BuildFirstEditionArgs,
 ): BuildFirstEditionResult {
-  const { identity, signedDidDoc, publicTitle, publicBody, tags } = args;
+  const seedSection: Section = {
+    id: "sec_" + randomHex(12),
+    title: args.publicTitle,
+    body: args.publicBody,
+    ...(args.tags && args.tags.length > 0 ? { tags: args.tags } : {}),
+    gamma_ref: "gamma_none_" + randomHex(24),
+  };
+  return buildSignedFirstEditionFromSections({
+    identity: args.identity,
+    signedDidDoc: args.signedDidDoc,
+    publicSections: [seedSection],
+  });
+}
+
+export interface BuildFirstEditionFromSectionsArgs {
+  readonly identity: BrowserIdentity;
+  readonly signedDidDoc: DidDocument;
+  /**
+   * Sections that will compose the public zone of the first edition.
+   * MUST be non-empty: the public zone is always present at height=1
+   * (the manifest is signed by `#public` and resolution flows assume a
+   * public zone exists). Callers that only have circle/self content to
+   * publish should pass a sentinel public section (e.g. `aithos-init`)
+   * alongside.
+   */
+  readonly publicSections: readonly Section[];
+  /**
+   * Optional sections for the circle zone of the first edition. When
+   * passed, the zone is sealed with a fresh DEK + wrap for the owner
+   * (and any additional `delegateRecipientsCircle`), exactly like
+   * {@link buildSignedNextEdition} does for height >= 2.
+   */
+  readonly circleSections?: readonly Section[];
+  /**
+   * Optional sections for the self zone of the first edition. Sealed the
+   * same way as `circleSections`.
+   */
+  readonly selfSections?: readonly Section[];
+  /**
+   * Extra wrap recipients beyond the owner for the circle zone. Each
+   * recipient receives its own HKDF-derived wrap of the per-edition DEK,
+   * so a mandate holder bundled at height=1 can decrypt the full
+   * plaintext. Resolved upstream by `fetchActiveDelegateRecipients`.
+   */
+  readonly delegateRecipientsCircle?: readonly EncryptRecipient[];
+  /**
+   * Extra wrap recipients beyond the owner for the self zone. Symmetric
+   * to `delegateRecipientsCircle`.
+   */
+  readonly delegateRecipientsSelf?: readonly EncryptRecipient[];
+}
+
+/**
+ * Build + sign a first edition from arbitrary public / circle / self
+ * section lists.
+ *
+ * Same crypto and on-wire format as {@link buildSignedFirstEdition} for
+ * the public portion — height=1, prev_hash=null, supersedes=null, manifest
+ * signed by the `#public` sphere key. The two functions emit byte-for-byte
+ * equivalent output for an input of one public section and no encrypted
+ * zones. Use this one when the SDK / app needs to:
+ *   - land multiple `addSection()` mutations in a single height=1 publish, or
+ *   - seal circle / self sections in the user's first edition (instead of
+ *     publishing a public-only height=1 followed by a height=2 re-publish
+ *     for the encrypted zones).
+ *
+ * When `circleSections` / `selfSections` are passed, each non-empty zone
+ * is sealed by {@link sealPrivateZone} — same DEK + HKDF wrap machinery
+ * used by {@link buildSignedNextEdition} for height >= 2, so the resulting
+ * manifest is verifiable by the existing reader path with no special
+ * casing of height=1.
+ *
+ * @throws Error if `publicSections` is empty.
+ */
+export function buildSignedFirstEditionFromSections(
+  args: BuildFirstEditionFromSectionsArgs,
+): BuildFirstEditionResult {
+  const { identity, signedDidDoc, publicSections } = args;
+  if (publicSections.length === 0) {
+    throw new Error(
+      "buildSignedFirstEditionFromSections: publicSections must contain at least one section",
+    );
+  }
   const did = identity.did;
   const now = new Date();
   const nowIso = now.toISOString();
   const version = editionVersionFromDate(identity.handle, now);
 
-  // 1. Build the ZoneDoc = {sections: [...]}
-  const section: Section = {
-    id: "sec_" + randomHex(12),
-    title: publicTitle,
-    body: publicBody,
-    ...(tags && tags.length > 0 ? { tags } : {}),
-    gamma_ref: "gamma_none_" + randomHex(24),
-  };
-  const zoneDoc: ZoneDoc = { sections: [section] };
+  // 1. Build the public ZoneDoc.
+  const publicZoneDoc: ZoneDoc = { sections: publicSections };
 
-  // 2. Sign the ZoneDoc with the public sphere key.
-  const zoneSigBytes = sign(
-    new TextEncoder().encode(canonicalize(zoneDoc)),
+  // 2. Sign the public ZoneDoc with the public sphere key.
+  const publicSigBytes = sign(
+    new TextEncoder().encode(canonicalize(publicZoneDoc)),
     identity.public.seed,
   );
-  const zoneSignature: ZoneSignature = {
+  const publicZoneSignature: ZoneSignature = {
     alg: "ed25519",
     key: `${did}#public`,
-    value: base64url(zoneSigBytes),
+    value: base64url(publicSigBytes),
   };
 
-  // 3. Render the ZoneDoc to markdown — byte-for-byte matching protocol-core's
-  //    renderZoneMarkdown output.
-  const markdownBytes = renderPublicMarkdown({
-    zoneDoc,
+  // 3. Render the public ZoneDoc to markdown — byte-for-byte matching
+  //    protocol-core's renderZoneMarkdown output.
+  const publicMarkdownBytes = renderPublicMarkdown({
+    zoneDoc: publicZoneDoc,
     subjectDid: did,
     subjectHandle: identity.handle,
     editionVersion: version,
@@ -173,22 +277,62 @@ export function buildSignedFirstEdition(
   });
 
   // 4. sha256 of rendered bytes.
-  const plaintextSha = bytesToHex(sha256(markdownBytes));
+  const publicSha = bytesToHex(sha256(publicMarkdownBytes));
 
-  // 5. Assemble the public zone manifest entry.
+  // 5a. Assemble the public zone manifest entry.
   const zonePublic: ZoneManifest = {
     file: "public.md",
     encrypted: false,
-    sha256_of_plaintext: plaintextSha,
-    section_titles: [publicTitle],
-    signature: zoneSignature,
+    sha256_of_plaintext: publicSha,
+    section_titles: publicSections.map((s) => s.title),
+    signature: publicZoneSignature,
   };
+
+  // 5b. Optionally seal the circle / self zones. Each sealed zone produces
+  //     a ZoneManifest entry (file + encrypted=true + sha256_of_plaintext
+  //     + section_titles + signature + cipher) AND the ciphertext bytes
+  //     to upload alongside the manifest.
+  let zoneCircle: ZoneManifest | undefined;
+  let circleBytes: Uint8Array | undefined;
+  if (args.circleSections && args.circleSections.length > 0) {
+    const sealed = sealPrivateZone({
+      identity,
+      sphere: "circle",
+      sections: args.circleSections,
+      editionVersion: version,
+      editionCreatedAt: nowIso,
+      delegateRecipients: args.delegateRecipientsCircle,
+    });
+    zoneCircle = sealed.zoneManifest;
+    circleBytes = sealed.bytes;
+  }
+
+  let zoneSelf: ZoneManifest | undefined;
+  let selfBytes: Uint8Array | undefined;
+  if (args.selfSections && args.selfSections.length > 0) {
+    const sealed = sealPrivateZone({
+      identity,
+      sphere: "self",
+      sections: args.selfSections,
+      editionVersion: version,
+      editionCreatedAt: nowIso,
+      delegateRecipients: args.delegateRecipientsSelf,
+    });
+    zoneSelf = sealed.zoneManifest;
+    selfBytes = sealed.bytes;
+  }
 
   // 6. Build the unsigned manifest with an empty manifest_signature value.
   const didJsonBytes = new TextEncoder().encode(
     JSON.stringify(signedDidDoc, null, 2) + "\n",
   );
   const didJsonSha = bytesToHex(sha256(didJsonBytes));
+
+  const zones: Manifest["zones"] = {
+    public: zonePublic,
+    ...(zoneCircle ? { circle: zoneCircle } : {}),
+    ...(zoneSelf ? { self: zoneSelf } : {}),
+  };
 
   const baseManifest: Omit<Manifest, "integrity"> & {
     integrity: { sha256_of_did_json: string; manifest_signature: ManifestSignature };
@@ -205,9 +349,7 @@ export function buildSignedFirstEdition(
       prev_hash: null,
       height: 1,
     },
-    zones: {
-      public: zonePublic,
-    },
+    zones,
     integrity: {
       sha256_of_did_json: didJsonSha,
       manifest_signature: {
@@ -234,7 +376,12 @@ export function buildSignedFirstEdition(
     },
   };
 
-  return { manifest, publicMarkdownBytes: markdownBytes };
+  return {
+    manifest,
+    publicMarkdownBytes,
+    ...(circleBytes ? { circleBytes } : {}),
+    ...(selfBytes ? { selfBytes } : {}),
+  };
 }
 
 /* -------------------------------------------------------------------------- */

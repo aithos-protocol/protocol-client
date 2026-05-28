@@ -5,6 +5,47 @@ All notable changes to `@aithos/protocol-client` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this package adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-alpha.14] — 2026-05-28
+
+### Added
+
+- **`buildSignedFirstEditionFromSections` accepts encrypted-zone sections
+  at height=1.** New optional args:
+  - `circleSections?: readonly Section[]`
+  - `selfSections?: readonly Section[]`
+  - `delegateRecipientsCircle?: readonly EncryptRecipient[]`
+  - `delegateRecipientsSelf?: readonly EncryptRecipient[]`
+
+  When passed, each non-empty private zone is sealed via the same
+  `sealPrivateZone` helper used by `buildSignedNextEdition` (fresh DEK +
+  HKDF wrap for the owner + any delegate recipients, XChaCha20-Poly1305-IETF
+  ciphertext). The resulting manifest is verifiable by the existing
+  reader path with no special-casing of height=1.
+
+- `BuildFirstEditionResult` gains optional `circleBytes?: Uint8Array`
+  and `selfBytes?: Uint8Array` — the sealed ciphertext bytes to upload
+  alongside the manifest as `zones.circle.bytes_base64` /
+  `zones.self.bytes_base64` in `aithos.publish_ethos_edition`.
+
+### Unchanged
+
+- `buildSignedFirstEdition` (the single-section wrapper used by
+  `runOnboarding`) is byte-for-byte unchanged. It continues to emit a
+  public-only first edition.
+- An existing call site that only passes `publicSections` produces the
+  exact same manifest as before — all new args are optional and
+  non-breaking.
+- `publicSections` remains required and non-empty. Callers that only
+  have circle/self content to land at height=1 should pass a sentinel
+  public section (e.g. `aithos-init`) alongside; the protocol spec
+  would allow a missing public zone, but every resolution flow (handle
+  lookup, did.json discovery, public crawl) assumes one exists.
+
+### Migration
+
+None required. Existing call sites continue to work. New capability is
+opt-in via the new args.
+
 ## [0.1.0-alpha.13] — 2026-05-10
 
 ### Fixed
