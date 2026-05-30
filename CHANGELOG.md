@@ -5,6 +5,19 @@ All notable changes to `@aithos/protocol-client` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this package adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-alpha.15] — 2026-05-30
+
+### Added
+
+- **`validateScopesAgainstSphere` permits `data.*` scopes under the public
+  sphere.** Data access scopes (`data.<collection>.<action>`) are
+  sphere-neutral — the data access axis is the collection, and the
+  cryptographic binding is the grantee key + CMK wrap, not the sphere
+  (`aithos-protocol` `spec/data/04-mandates.md` §4.4). They are now accepted
+  under every `actor_sphere`, including `public`. This unblocks combined
+  mandates such as `ethos.read.public` + `data.<col>.read`. Mirrors
+  `@aithos/protocol-core` `validateScopesAgainstSphere` — kept in lockstep.
+
 ## [0.1.0-alpha.14] — 2026-05-28
 
 ### Added
