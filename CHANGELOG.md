@@ -5,6 +5,20 @@ All notable changes to `@aithos/protocol-client` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this package adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-alpha.16] — 2026-05-30
+
+### Added
+
+- **`signMandate` accepts the lateral `data.<collection>.append` scope.**
+  Append is insert-only and grants no read (mirrors protocol-core). Like
+  write/compute mandates, an append mandate now requires `grantee.pubkey`
+  (the depositor signs each insert envelope) but needs no `kex_pubkey` — the
+  depositor seals each DEK to the owner's public key
+  (`@aithos/data-crypto` `encryptRecordForRecipient`) and keeps no read
+  capability. `mintDelegateBundle` already supplies the grantee key, so
+  minting an append bundle works end-to-end. Kept in lockstep with
+  `@aithos/protocol-core`.
+
 ## [0.1.0-alpha.15] — 2026-05-30
 
 ### Added

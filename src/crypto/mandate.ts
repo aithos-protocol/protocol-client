@@ -41,6 +41,20 @@ function hasWriteScope(scopes: readonly string[]): boolean {
   return scopes.some((s) => s.startsWith(WRITE_SCOPE_PREFIX));
 }
 
+/**
+ * Whether the scope set carries any `data.<collection>.append` scope.
+ *
+ * `append` is a lateral data capability (insert-only, no read) — mirrors
+ * protocol-core `hasDataAppendScope`. Like write/compute mandates, an append
+ * mandate MUST bind to a `grantee.pubkey`: the depositor signs every insert
+ * envelope under it. Unlike read/write data mandates it needs no `kex_pubkey`
+ * — the depositor seals each DEK to the owner's public key and keeps no read
+ * capability.
+ */
+function hasDataAppendScope(scopes: readonly string[]): boolean {
+  return scopes.some((s) => /^data\.[^.]+\.append$/.test(s));
+}
+
 export interface Grantee {
   readonly id: string;
   readonly label?: string;
@@ -99,6 +113,11 @@ export function signMandate(args: SignMandateArgs): SignedMandate {
   if (hasWriteScope(args.scopes) && !args.grantee.pubkey) {
     throw new Error(
       `write mandate requires grantee.pubkey so the delegate signer can be bound (§4.5.4)`,
+    );
+  }
+  if (hasDataAppendScope(args.scopes) && !args.grantee.pubkey) {
+    throw new Error(
+      `append mandate (data.<collection>.append) requires grantee.pubkey so the depositor's insert signer can be bound`,
     );
   }
   validateScopesAgainstSphere(args.scopes, args.actorSphere);
