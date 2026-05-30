@@ -182,7 +182,11 @@ function validateScopesAgainstSphere(
         s === "ethos.read.public" ||
         s === "ethos.read.all" ||
         s === "ethos.write.public" ||
-        s === "gamma.read";
+        s === "gamma.read" ||
+        // Data scopes (`data.<collection>.<action>`) are sphere-neutral and
+        // permitted under every sphere, including public — mirrors
+        // protocol-core `validateScopesAgainstSphere`. Keep in lockstep.
+        s.startsWith("data.");
       if (!ok) {
         throw new Error(
           `scope ${s} is not permitted for the public sphere`,
