@@ -5,6 +5,35 @@ All notable changes to `@aithos/protocol-client` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this package adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-alpha.17] — 2026-05-31
+
+> ⚠️ **Coordinated release.** The envelope-signing change below switches the
+> client to the "with-proof" convention. It MUST NOT be deployed/consumed until
+> the Aithos servers run the dual-verify EXPAND step
+> (`platform/shared`, accept with-proof OR without-proof) in production. See
+> `PLAN-ENVELOPE-PROOF-CONVERGENCE.md`.
+
+### Changed
+
+- **Canonicalization unified onto `@aithos/protocol-core`.** `src/crypto/
+  canonical.ts` now re-exports core's `canonicalize` instead of a hand-ported
+  copy — the exact function the Aithos servers (`platform/shared`) already use,
+  removing any client/server drift on the bytes that envelope signatures,
+  mandate signatures and ethos edition hashes commit to. Byte-identity over a
+  representative corpus is proven by `test/canonical-core-conformance.test.ts`.
+  (Stricter on one edge: an `undefined` object value now throws per RFC 8785
+  rather than being silently skipped — Aithos payloads never carry undefined.)
+- **`buildSignedEnvelope` signs in the "with-proof" convention** (spec §5.1.1 /
+  Ed25519Signature2020), delegating to core's `signEnvelope` /
+  `signEnvelopeWithMandate`. Replaces the former "without-proof" ported signer.
+  The function stays synchronous; call sites are unchanged. This aligns the
+  client with the data-PDS and with how mandates/revocations are already signed.
+
+### Dependencies
+
+- `@aithos/protocol-core` `^0.5.0` → `^0.6.3` (now a real runtime dependency,
+  not vestigial — the client imports core's `canonicalize` and envelope signers).
+
 ## [0.1.0-alpha.16] — 2026-05-30
 
 ### Added

@@ -3,25 +3,33 @@
 
 // Signed envelope §11.2 — browser side.
 //
-// A POST to `/mcp/primitives/write` carries `params._envelope` alongside
-// the rest of `params`. The server recomputes params_hash over the
-// canonicalized params minus `_envelope` and verifies the Ed25519
-// signature over canonicalized(envelope minus proof).
+// ⚠️ CONVENTION CHANGE (PLAN-ENVELOPE-PROOF-CONVERGENCE.md, étape 2b):
+// `buildSignedEnvelope` now delegates to `@aithos/protocol-core` and signs in
+// the "with-proof" convention (canonicalize the full envelope with
+// proof.proofValue=""), exactly like the data-PDS, mandates and revocations.
+// This replaces protocol-client's former "without-proof" ported signer.
 //
-// Two signing paths supported:
+// DO NOT PUBLISH this until the server dual-verify (étape 1 EXPAND) is deployed
+// to ALL without-proof surfaces (api/compute/extract/builder/primitives) and
+// confirmed live — otherwise with-proof envelopes are rejected by servers that
+// only accept without-proof.
 //
-//   - Owner path: `verificationMethod = "{iss}#{sphere}"`; `mandate`
-//     omitted. The server resolves the sphere key via the subject's
-//     did.json.
+// The function stays SYNCHRONOUS (core's signEnvelope / signEnvelopeWithMandate
+// are sync, seed-based), so call sites (editor.ts, onboarding.ts,
+// mandate-mint.ts) are unchanged.
+//
+// Two signing paths:
+//   - Owner path: `verificationMethod = "{iss}#{sphere}"`; `mandate` omitted.
 //   - Delegate path: `verificationMethod = <multibase Ed25519 pubkey>`;
-//     `mandate` REQUIRED (carries the full §4.2 Mandate). The server
-//     refuses any multibase-keyed envelope without an attached mandate.
+//     `mandate` REQUIRED (carries the full §4.2 Mandate).
 
-import { sha256 } from "@noble/hashes/sha2";
+import {
+  signEnvelope,
+  signEnvelopeWithMandate,
+} from "@aithos/protocol-core/envelope";
+import type { Mandate as CoreMandate } from "@aithos/protocol-core/mandate";
 
-import { sign, type KeyPair } from "./ed25519.js";
-import { base64url, bytesToHex } from "./encoding.js";
-import { canonicalize } from "./canonical.js";
+import type { KeyPair } from "./ed25519.js";
 import type { SignedMandate } from "./mandate.js";
 
 export interface EnvelopeProof {
@@ -77,46 +85,36 @@ export interface BuildEnvelopeArgs {
 }
 
 export function buildSignedEnvelope(args: BuildEnvelopeArgs): SignedEnvelope {
-  const iat = Math.floor(Date.now() / 1000);
-  const exp = iat + (args.ttlSeconds ?? 120);
-  const nonce = generateNonce();
-  const paramsHash = "sha256-" + bytesToHex(
-    sha256(new TextEncoder().encode(canonicalize(args.params))),
-  );
+  const ttlSeconds = args.ttlSeconds ?? 120;
 
-  // Canonicalize the payload that gets signed. Mandate is included when
-  // present so the signature commits to the delegation context — the
-  // server can't swap the mandate out from under the caller.
-  const unsigned = {
-    "aithos-envelope": "0.1.0" as const,
-    iss: args.iss,
-    aud: args.aud,
-    method: args.method,
-    iat,
-    exp,
-    nonce,
-    params_hash: paramsHash,
-    ...(args.mandate ? { mandate: args.mandate } : {}),
-  };
+  // Delegate path: bare-multibase verificationMethod + attached mandate.
+  // Owner path: did#sphere verificationMethod, no mandate.
+  const env = args.mandate
+    ? signEnvelopeWithMandate({
+        iss: args.iss,
+        aud: args.aud,
+        method: args.method,
+        params: args.params,
+        delegateKey: {
+          seed: args.signer.seed,
+          pubkeyMultibase: args.verificationMethod,
+        },
+        mandate: args.mandate as unknown as CoreMandate,
+        ttlSeconds,
+      })
+    : signEnvelope({
+        iss: args.iss,
+        aud: args.aud,
+        method: args.method,
+        params: args.params,
+        sphereKey: {
+          seed: args.signer.seed,
+          verificationMethod: args.verificationMethod,
+        },
+        ttlSeconds,
+      });
 
-  const sigBytes = sign(
-    new TextEncoder().encode(canonicalize(unsigned)),
-    args.signer.seed,
-  );
-
-  return {
-    ...unsigned,
-    proof: {
-      type: "Ed25519Signature2020",
-      verificationMethod: args.verificationMethod,
-      created: new Date(iat * 1000).toISOString(),
-      proofValue: base64url(sigBytes),
-    },
-  };
-}
-
-function generateNonce(): string {
-  const bytes = new Uint8Array(16);
-  crypto.getRandomValues(bytes);
-  return bytesToHex(bytes);
+  // core's SignedEnvelope is structurally identical to protocol-client's
+  // (same §11.2 wire shape); the cast bridges the two nominal types.
+  return env as unknown as SignedEnvelope;
 }
