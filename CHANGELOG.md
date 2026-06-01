@@ -5,6 +5,17 @@ All notable changes to `@aithos/protocol-client` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this package adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-alpha.18] — 2026-06-01
+
+### Changed
+
+- Raise the `@aithos/protocol-core` dependency floor from `^0.6.3` to `^0.6.5`.
+  0.6.5 makes the envelope/mandate verify path browser-bundleable (no `node:`
+  built-ins) and `Buffer`-free at runtime. Since this client imports
+  `@aithos/protocol-core/envelope` into browser apps, pinning the floor
+  guarantees consumers can't resolve a 0.6.3/0.6.4 that throws
+  `Buffer is not defined` in the browser. No code change.
+
 ## [0.1.0-alpha.17] — 2026-05-31
 
 > ⚠️ **Coordinated release.** The envelope-signing change below switches the
