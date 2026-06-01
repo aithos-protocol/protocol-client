@@ -137,6 +137,9 @@ export async function runOnboarding(args: OnboardArgs): Promise<OnboardResult> {
       public: bytesToHexLocal(identity.public.seed),
       circle: bytesToHexLocal(identity.circle.seed),
       self: bytesToHexLocal(identity.self.seed),
+      ...(identity.data
+        ? { data: bytesToHexLocal(identity.data.seed) }
+        : {}),
     },
     public_keys_multibase: {
       // Informational, redundant with did.json but useful for quick reconnects

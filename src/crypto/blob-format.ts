@@ -26,12 +26,18 @@ export interface BlobIdentity {
   readonly displayName: string;
 }
 
-/** All four seeds as 64-char lowercase hex (32 bytes each). */
+/** Sphere seeds as 64-char lowercase hex (32 bytes each). */
 export interface BlobSeeds {
   readonly root: string;
   readonly public: string;
   readonly circle: string;
   readonly self: string;
+  /**
+   * Optional dedicated #data sphere seed. Present on vaults/recovery files
+   * created since the #data sphere landed; absent on legacy ones (which sign
+   * data ops under #root).
+   */
+  readonly data?: string;
 }
 
 export interface BlobPlaintext {
@@ -106,6 +112,8 @@ function validate(p: unknown): asserts p is BlobPlaintext {
   assertHex32(seeds["public"], "seeds.public");
   assertHex32(seeds["circle"], "seeds.circle");
   assertHex32(seeds["self"], "seeds.self");
+  // #data is optional (absent on legacy vaults); validate only when present.
+  if (seeds["data"] !== undefined) assertHex32(seeds["data"], "seeds.data");
 
   const identity = p["identity"];
   if (!isPlainObject(identity)) throw new BlobFormatError("identity: not an object");
@@ -184,6 +192,7 @@ export function buildBlobPlaintext(input: {
     readonly public: Uint8Array;
     readonly circle: Uint8Array;
     readonly self: Uint8Array;
+    readonly data?: Uint8Array;
   };
   readonly delegates?: readonly StoredDelegate[];
 }): BlobPlaintext {
@@ -195,6 +204,7 @@ export function buildBlobPlaintext(input: {
       public: bytesToHex(input.seeds.public),
       circle: bytesToHex(input.seeds.circle),
       self: bytesToHex(input.seeds.self),
+      ...(input.seeds.data ? { data: bytesToHex(input.seeds.data) } : {}),
     },
     delegates: input.delegates ?? [],
   };

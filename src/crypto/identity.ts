@@ -38,6 +38,14 @@ export interface BrowserIdentity {
   readonly public: KeyPair;
   readonly circle: KeyPair;
   readonly self: KeyPair;
+  /**
+   * Dedicated data sub-protocol sphere (spec/data/02-key-hierarchy.md §2.2).
+   * Owner data/asset PDS envelopes sign under this `#data` key so the root key
+   * stays cold. OPTIONAL for backward compatibility: identities created before
+   * the #data sphere landed (and stored seed sets lacking it) have no `data`
+   * key and sign data ops under `#root`.
+   */
+  readonly data?: KeyPair;
 }
 
 export interface VerificationMethod {
@@ -85,6 +93,9 @@ export function createBrowserIdentity(
   const pub = generateKeyPair();
   const circle = generateKeyPair();
   const self = generateKeyPair();
+  // New identities carry a #data sphere from creation (eager); legacy ones
+  // without it still rehydrate and operate under #root.
+  const data = generateKeyPair();
   const did = "did:aithos:" + ed25519PublicKeyToMultibase(root.publicKey);
   return {
     handle,
@@ -94,6 +105,7 @@ export function createBrowserIdentity(
     public: pub,
     circle,
     self,
+    data,
   };
 }
 
@@ -127,6 +139,29 @@ export function signedDidDocument(identity: BrowserIdentity): DidDocument {
     controller: did,
     publicKeyMultibase: ed25519PublicKeyToMultibase(identity[sphere].publicKey),
   }));
+
+  // Optional dedicated #data sphere (spec/data/02-key-hierarchy.md). Appended
+  // AFTER the three Ethos spheres so the canonical 3-sphere shape is preserved
+  // for identities without a data key — matches @aithos/protocol-core's
+  // buildDidDocument ordering. `#data` signs owner data/asset PDS envelopes;
+  // `#data-kex` is its X25519 key-agreement counterpart for CMK wraps.
+  if (identity.data) {
+    verificationMethod.push({
+      id: `${did}#data`,
+      type: "Ed25519VerificationKey2020",
+      controller: did,
+      publicKeyMultibase: ed25519PublicKeyToMultibase(identity.data.publicKey),
+    });
+    const dataXSk = edSeedToX25519Secret(identity.data.seed);
+    const dataXPk = x25519.getPublicKey(dataXSk);
+    dataXSk.fill(0);
+    keyAgreement.push({
+      id: `${did}#data-kex`,
+      type: "X25519KeyAgreementKey2020",
+      controller: did,
+      publicKeyMultibase: x25519PublicKeyToMultibase(dataXPk),
+    });
+  }
 
   // Build the unsigned doc, canonicalize, sign, then attach the proofValue.
   const unsigned = {
@@ -179,6 +214,8 @@ interface StoredSeeds {
     readonly public: string;
     readonly circle: string;
     readonly self: string;
+    /** Optional dedicated #data sphere seed (absent on legacy seed sets). */
+    readonly data?: string;
   };
 }
 
@@ -209,5 +246,6 @@ export function browserIdentityFromStored(s: StoredSeeds): BrowserIdentity {
     public: keyPairFromHexSeed(s.seeds.public),
     circle: keyPairFromHexSeed(s.seeds.circle),
     self: keyPairFromHexSeed(s.seeds.self),
+    ...(s.seeds.data ? { data: keyPairFromHexSeed(s.seeds.data) } : {}),
   };
 }

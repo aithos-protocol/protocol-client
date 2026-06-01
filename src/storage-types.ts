@@ -30,6 +30,8 @@ export interface StoredIdentity {
     readonly public: string;
     readonly circle: string;
     readonly self: string;
+    /** Optional dedicated #data sphere seed (absent on legacy keystores). */
+    readonly data?: string;
   };
   /** Added on save, not authoritative. */
   readonly savedAt: string;

@@ -5,6 +5,26 @@ All notable changes to `@aithos/protocol-client` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this package adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-alpha.19] — 2026-06-01
+
+### Added
+
+- **Optional dedicated `#data` sphere** in the browser identity path
+  (spec/data/02-key-hierarchy.md §2.2). `createBrowserIdentity` is now eager —
+  new identities carry a `#data` keypair; `signedDidDocument` appends a `#data`
+  verificationMethod + a `#data-kex` keyAgreement entry **after** the three Ethos
+  spheres (root-signed, canonical order matching `@aithos/protocol-core`). The
+  recovery/vault blob (`blob-format.ts`) and the keystore types serialize an
+  optional `data` seed; `browserIdentityFromStored` rehydrates it when present.
+
+  Purpose: owner data/asset PDS envelopes can sign under `#data` so the root key
+  stays cold (the data sub-protocol's intended convention).
+
+  **Backward compatible**: `#data` is optional everywhere — legacy identities,
+  vaults, and recovery files (root/public/circle/self only) still load and
+  operate under `#root`. No wire-format change; 81 existing + 5 new `#data`
+  tests pass.
+
 ## [0.1.0-alpha.18] — 2026-06-01
 
 ### Changed
