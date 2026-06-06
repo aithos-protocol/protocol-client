@@ -120,6 +120,29 @@ export {
 // crypto/decrypt — canonical for ZoneCipher.
 export * from "./crypto/decrypt.js";
 
+// crypto/bundle-v03 — v0.3 per-section READ (manifest, index, per-section decrypt).
+export {
+  type SectionCipher,
+  type SectionTitle,
+  type TitleCipher,
+  type SectionDescriptor,
+  type BundleZoneV2,
+  type ManifestV03,
+  type SphereName,
+  type SectionReader,
+  type IndexRow,
+  type SectionReadResult,
+  isV03Manifest,
+  ownerSectionReader,
+  delegateSectionReader,
+  decryptSection,
+  decryptSectionTitle,
+  parseSectionMarkdown,
+  readZoneIndex,
+  readSection,
+  locateSection,
+} from "./crypto/bundle-v03.js";
+
 export * from "./crypto/envelope.js";
 
 // crypto/identity — exclude local DidDocument (canonical is types.ts).

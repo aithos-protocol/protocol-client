@@ -73,7 +73,7 @@ export function decryptZone(args: DecryptOwnerArgs): string {
   }
 }
 
-function unwrapDek(wrap: WrapEntry, mySk: Uint8Array): Uint8Array {
+export function unwrapDek(wrap: WrapEntry, mySk: Uint8Array): Uint8Array {
   if (wrap.alg !== "x25519-hkdf-sha256-aead") {
     throw new Error(`unsupported wrap alg: ${wrap.alg}`);
   }
