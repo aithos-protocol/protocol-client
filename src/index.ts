@@ -44,6 +44,8 @@ export {
   type AithosEndpoints,
   DEFAULT_ENDPOINTS,
   getEndpoints,
+  configureEndpoints,
+  resetEndpoints,
   converseEndpoint,
   readEndpoint,
   writeEndpoint,

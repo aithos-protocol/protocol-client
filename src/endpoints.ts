@@ -70,6 +70,22 @@ export function _resetEndpoints(): void {
   _activeEndpoints = { ...DEFAULT_ENDPOINTS };
 }
 
+/**
+ * PUBLIC endpoint configuration. Override one or more endpoints — e.g. to point
+ * the client at a dev account (`configureEndpoints({ api: "https://api.dev.aithos.be", cdn: "https://cdn.dev.aithos.be" })`).
+ * Module-scoped: affects every subsequent read/write in this process. The
+ * `@aithos/sdk` calls this on construction so its endpoint config drives the
+ * api/cdn reached through protocol-client too.
+ */
+export function configureEndpoints(overrides: Partial<AithosEndpoints>): void {
+  _setEndpoints(overrides);
+}
+
+/** PUBLIC: reset endpoints to the production defaults. */
+export function resetEndpoints(): void {
+  _resetEndpoints();
+}
+
 /* -------------------------------------------------------------------------- */
 /*  URL builders                                                              */
 /*                                                                             */
