@@ -17,7 +17,7 @@ import { xchacha20poly1305 } from "@noble/ciphers/chacha";
 import { x25519 } from "@noble/curves/ed25519";
 import { sha256 } from "@noble/hashes/sha2";
 
-import { base64url, bytesToHex } from "./encoding.js";
+import { base64url, bytesToHex, multibaseToX25519PublicKey } from "./encoding.js";
 import { canonicalize } from "./canonical.js";
 import { sign } from "./ed25519.js";
 import { edSeedToX25519Secret } from "./kex.js";
@@ -346,4 +346,171 @@ export function authorBundleV03(args: AuthorV03Args): AuthoredV03 {
   };
 
   return { manifest: signManifestV03(args.identity, unsigned), blobs };
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Delegate (section-scoped) authoring — patch one zone, carry the rest      */
+/* -------------------------------------------------------------------------- */
+
+/** A section-scoped delegate authoring from the browser (the agent key + mandate). */
+export interface DelegateAuthorV03 {
+  /** Grantee id from the mandate (e.g. `agent:gmail`). */
+  readonly granteeId: string;
+  /** The delegate's Ed25519 public key, multibase — the wrap recipient suffix. */
+  readonly pubkeyMultibase: string;
+  /** The delegate's Ed25519 seed (32 bytes). */
+  readonly seed: Uint8Array;
+  /** The mandate authorising this write — recorded as `authorized_by`. */
+  readonly mandateId: string;
+  /** The mandate's actor sphere — the only zone the delegate may (re)author. */
+  readonly actorSphere: "circle" | "self";
+}
+
+/** Recipients for a delegate-authored section: the owner sphere + the delegate itself (§3.5.2′). */
+export function delegateZoneRecipients(
+  ownerZonePubkey: Uint8Array,
+  subjectDid: string,
+  zone: "circle" | "self",
+  delegate: DelegateAuthorV03,
+): SectionRecipient[] {
+  const dsk = edSeedToX25519Secret(delegate.seed);
+  const dpk = x25519.getPublicKey(dsk);
+  dsk.fill(0);
+  return [
+    { didUrl: `${subjectDid}#${zone}-kex`, x25519PublicKey: ownerZonePubkey },
+    { didUrl: `${delegate.granteeId}#${delegate.pubkeyMultibase}`, x25519PublicKey: dpk },
+  ];
+}
+
+/** Extract the subject's `#${zone}-kex` X25519 public key from a DID document. */
+export function ownerZoneKexPubkey(
+  didDoc: { keyAgreement?: ReadonlyArray<{ id: string; publicKeyMultibase: string }> },
+  subjectDid: string,
+  zone: "circle" | "self",
+): Uint8Array {
+  const id = `${subjectDid}#${zone}-kex`;
+  const vm = (didDoc.keyAgreement ?? []).find((k) => k.id === id);
+  if (!vm) throw new Error(`DID document has no keyAgreement entry ${id}`);
+  return multibaseToX25519PublicKey(vm.publicKeyMultibase);
+}
+
+/** Sign a v0.3 manifest with the delegate Ed25519 key + `authorized_by` (§3.8′ #5). */
+export function signManifestV03Delegate(manifest: ManifestV03, delegate: DelegateAuthorV03): ManifestV03 {
+  const baseSig = { alg: "ed25519", key: delegate.pubkeyMultibase, value: "", authorized_by: delegate.mandateId };
+  const base: ManifestV03 = {
+    ...manifest,
+    integrity: { ...manifest.integrity, manifest_signature: baseSig },
+  } as ManifestV03;
+  const bytes = new TextEncoder().encode(canonicalize(base));
+  const raw = sign(bytes, delegate.seed);
+  return {
+    ...base,
+    integrity: { ...base.integrity, manifest_signature: { ...baseSig, value: base64url(raw) } },
+  } as ManifestV03;
+}
+
+export interface DelegatePatchArgs {
+  readonly delegate: DelegateAuthorV03;
+  readonly subjectDid: string;
+  readonly subjectHandle: string;
+  readonly displayName: string;
+  readonly didJson: Uint8Array;
+  /** The subject's `#${actorSphere}-kex` X25519 pubkey (from {@link ownerZoneKexPubkey}). */
+  readonly ownerZonePubkey: Uint8Array;
+  /** Predecessor edition + a blob fetcher (carry-forward source). */
+  readonly prev: { readonly manifest: ManifestV03; readonly getBlob: (file: string) => Uint8Array };
+  /** Changes to the delegate's actor sphere (upserts provide full sections). */
+  readonly patch: { readonly upserts?: readonly Section[]; readonly deletes?: readonly string[] };
+  readonly now?: Date;
+}
+
+/**
+ * Author a new edition AS A DELEGATE: patch only the delegate's `actorSphere`
+ * (its scoped sections are sealed to owner + delegate), carry every other
+ * section and zone forward VERBATIM (blob + descriptor copied — no decryption,
+ * since the delegate isn't entitled to read them), and sign the manifest with
+ * the delegate key + `authorized_by`. Mirrors protocol-core `patchEditionV03`.
+ */
+export function patchEditionV03Delegate(args: DelegatePatchArgs): AuthoredV03 {
+  const now = args.now ?? new Date();
+  const createdAt = now.toISOString();
+  const prev = args.prev.manifest;
+  const zone = args.delegate.actorSphere;
+  const blobs = new Map<string, Uint8Array>();
+
+  const editionVersion = allocEditionVersion(now, prev.edition.version);
+  const bundleId = `urn:aithos:${args.subjectHandle}:${editionVersion}`;
+  const recipients = delegateZoneRecipients(args.ownerZonePubkey, args.subjectDid, zone, args.delegate);
+  const indexEncrypted = ZONE_INDEX_ENCRYPTED[zone];
+
+  const zoneEntries: Partial<Record<SphereName, BundleZoneV2>> = {};
+  for (const z of SPHERES) {
+    const prevZone = prev.zones[z];
+    if (z !== zone) {
+      // Carry the whole zone forward verbatim (copy blobs + reuse the entry).
+      if (prevZone) {
+        for (const d of prevZone.sections) blobs.set(d.file, args.prev.getBlob(d.file));
+        zoneEntries[z] = prevZone;
+      }
+      continue;
+    }
+
+    // The authored zone: apply the patch.
+    const deletes = new Set(args.patch.deletes ?? []);
+    const upserts = new Map((args.patch.upserts ?? []).map((s) => [s.id, s]));
+    const descriptors: SectionDescriptor[] = [];
+
+    // Existing sections in their prior order: drop deletes, re-encrypt upserts,
+    // otherwise carry forward verbatim.
+    for (const d of prevZone?.sections ?? []) {
+      if (deletes.has(d.section_id)) continue;
+      const up = upserts.get(d.section_id);
+      if (up) {
+        const w = writeSection({ zone, encrypted: true, indexEncrypted, subjectDid: args.subjectDid, recipients }, up);
+        blobs.set(w.file, w.blob);
+        descriptors.push(w.descriptor);
+        upserts.delete(d.section_id);
+      } else {
+        blobs.set(d.file, args.prev.getBlob(d.file));
+        descriptors.push(d);
+      }
+    }
+    // New sections (upserts not present in prev), in input order.
+    for (const s of args.patch.upserts ?? []) {
+      if (!upserts.has(s.id)) continue; // already applied above
+      const w = writeSection({ zone, encrypted: true, indexEncrypted, subjectDid: args.subjectDid, recipients }, s);
+      blobs.set(w.file, w.blob);
+      descriptors.push(w.descriptor);
+    }
+
+    zoneEntries[z] = {
+      format_version: "v2",
+      encrypted: true,
+      ...(indexEncrypted ? { index_encrypted: true } : {}),
+      sections: descriptors,
+    };
+  }
+
+  const didHashHex = bytesToHex(sha256(args.didJson));
+  const unsigned: ManifestV03 = {
+    aithos: "0.3.0",
+    bundle_id: bundleId,
+    subject_did: args.subjectDid,
+    subject_handle: args.subjectHandle,
+    display_name: args.displayName,
+    edition: {
+      version: editionVersion,
+      created_at: createdAt,
+      supersedes: prev.bundle_id,
+      prev_hash: "sha256:" + canonicalManifestV03HashHex(prev),
+      height: prev.edition.height + 1,
+    },
+    zones: zoneEntries as ManifestV03["zones"],
+    integrity: {
+      sha256_of_did_json: didHashHex,
+      manifest_signature: { alg: "ed25519", key: args.delegate.pubkeyMultibase, value: "" },
+    },
+  };
+
+  return { manifest: signManifestV03Delegate(unsigned, args.delegate), blobs };
 }

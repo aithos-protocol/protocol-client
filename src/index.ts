@@ -150,14 +150,20 @@ export {
   type WrittenSection,
   type AuthorV03Args,
   type AuthoredV03,
+  type DelegateAuthorV03,
+  type DelegatePatchArgs,
   subjectRecipient,
   renderSectionMarkdown,
   encryptSection,
   encryptSectionTitle,
   writeSection,
   signManifestV03,
+  signManifestV03Delegate,
   canonicalManifestV03HashHex,
   authorBundleV03,
+  delegateZoneRecipients,
+  ownerZoneKexPubkey,
+  patchEditionV03Delegate,
 } from "./crypto/bundle-v03-write.js";
 
 export * from "./crypto/envelope.js";
