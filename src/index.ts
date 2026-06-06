@@ -58,6 +58,9 @@ export * from "./zone-parser.js";
 // --- Ethos edition editor (high-level: load, modify, publish) ---
 export * from "./editor.js";
 
+// --- v0.3 per-section editor (read + owner publish over the v0.3 RPCs) ---
+export * from "./editor-v03.js";
+
 // --- Delegate recipients resolution (canonical for SealedZone) ---
 export * from "./delegate-recipients.js";
 
