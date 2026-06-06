@@ -143,6 +143,23 @@ export {
   locateSection,
 } from "./crypto/bundle-v03.js";
 
+// crypto/bundle-v03-write — v0.3 per-section WRITE (author an edition).
+export {
+  type SectionRecipient,
+  type WriteSectionCtx,
+  type WrittenSection,
+  type AuthorV03Args,
+  type AuthoredV03,
+  subjectRecipient,
+  renderSectionMarkdown,
+  encryptSection,
+  encryptSectionTitle,
+  writeSection,
+  signManifestV03,
+  canonicalManifestV03HashHex,
+  authorBundleV03,
+} from "./crypto/bundle-v03-write.js";
+
 export * from "./crypto/envelope.js";
 
 // crypto/identity — exclude local DidDocument (canonical is types.ts).

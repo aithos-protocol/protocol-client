@@ -80,7 +80,7 @@ export function encryptZone(args: {
   };
 }
 
-function wrapDek(
+export function wrapDek(
   dek: Uint8Array,
   recipientDidUrl: string,
   recipientPk: Uint8Array,

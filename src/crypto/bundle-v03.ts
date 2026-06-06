@@ -144,14 +144,19 @@ export function delegateSectionReader(
 /*  AEAD: section body + title                                                */
 /* -------------------------------------------------------------------------- */
 
-function sectionAad(subjectDid: string, sectionId: string): Uint8Array {
+export function sectionAad(subjectDid: string, sectionId: string): Uint8Array {
   const enc = new TextEncoder();
   return concatBytes(SECTION_AAD_PREFIX, enc.encode(subjectDid), NUL, enc.encode(sectionId));
 }
 
-function titleAad(subjectDid: string, sectionId: string): Uint8Array {
+export function titleAad(subjectDid: string, sectionId: string): Uint8Array {
   const enc = new TextEncoder();
   return concatBytes(TITLE_AAD_PREFIX, enc.encode(subjectDid), NUL, enc.encode(sectionId));
+}
+
+/** Shared byte concatenation (also used by the write half). */
+export function concatBytesV03(...arrs: Uint8Array[]): Uint8Array {
+  return concatBytes(...arrs);
 }
 
 /** Decrypt one section's body ciphertext to its markdown form. Throws on no-wrap / tamper. */
