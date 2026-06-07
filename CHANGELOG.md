@@ -5,6 +5,27 @@ All notable changes to `@aithos/protocol-client` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this package adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-alpha.20] — 2026-06-06
+
+### Added
+
+- **v0.3 per-section bundle support.** `crypto/bundle-v03.ts` (read: manifest
+  types, `decryptSection` / `decryptSectionTitle`, `readZoneIndex`, `readSection`,
+  owner/delegate `SectionReader`) and `crypto/bundle-v03-write.ts` (author: owner
+  `authorBundleV03` with byte-identical carry-forward, `patchEditionV03Delegate`
+  for section-scoped delegate authoring, v0.3 manifest signing). AADs are
+  byte-identical with `@aithos/protocol-core` (cross-impl tested).
+- **v0.3 editor (`editor-v03.ts`):** `loadEthosV03` (manifest + per-zone index +
+  per-section decrypt over `get_ethos_manifest` / `get_ethos_section`) and
+  `publishEthosEditionV03Owner` (author + signed §11 publish, carry-forward).
+- **Public endpoint config:** `configureEndpoints` / `resetEndpoints` (promote the
+  former internal `_setEndpoints`) so consumers (the SDK) can point api/cdn at a
+  dev account.
+
+### Changed
+
+- Requires `@aithos/protocol-core` `^0.8.0` (per-section v0.3 default).
+
 ## [0.1.0-alpha.19] — 2026-06-01
 
 ### Added
