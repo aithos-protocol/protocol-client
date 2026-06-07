@@ -17,7 +17,7 @@ import { base64url } from "./encoding.js";
 import type { BrowserIdentity, Sphere } from "./identity.js";
 import { sphereDidUrl } from "./identity.js";
 
-export const MANDATE_VERSION_CURRENT = "0.3.0" as const;
+export const MANDATE_VERSION_CURRENT = "0.5.0" as const;
 
 /**
  * Scopes a mandate may NEVER carry. Mirrors protocol-core's
@@ -174,42 +174,76 @@ export function signMandate(args: SignMandateArgs): SignedMandate {
  *     `gamma.read`. Any other scope is rejected.
  *   - For circle/self sphere, read scopes and gamma.read are unconstrained.
  */
+/**
+ * Minimal ethos-scope parse — `ethos.<verb>.<zone>[#selector]`. Returns null
+ * for any non-ethos or malformed scope (fail-closed). A browser-safe subset of
+ * protocol-core's `parseEthosScope`, kept inline so this mint path stays
+ * dependency-free (see file header).
+ */
+function parseEthosVerbZone(s: string): { verb: string; zone: string } | null {
+  if (!s.startsWith("ethos.")) return null;
+  const hash = s.indexOf("#");
+  const head = hash === -1 ? s : s.slice(0, hash);
+  const parts = head.split(".");
+  if (parts.length !== 3) return null;
+  const verb = parts[1]!;
+  const zone = parts[2]!;
+  const verbs = new Set(["read", "edit", "append", "delete", "write"]);
+  const zones = new Set(["public", "circle", "self", "all"]);
+  if (!verbs.has(verb) || !zones.has(zone)) return null;
+  if (zone === "all" && verb !== "read") return null;
+  return { verb, zone };
+}
+
+const MUTATING_ETHOS_VERBS: ReadonlySet<string> = new Set([
+  "edit",
+  "append",
+  "delete",
+  "write",
+]);
+
+/**
+ * Validate the scope → actor_sphere relationship. Mirrors protocol-core's
+ * `validateScopesAgainstSphere` (v0.5 verb-scopes) so we fail client-side with
+ * the same errors the server would emit. UX only — the server re-checks.
+ *
+ * Rules (§4.8′):
+ *   - A mutating ethos verb (write/edit/append/delete) on zone Z requires
+ *     `actor_sphere === Z` (the signing key must match the target zone).
+ *   - The `public` sphere allows only `ethos.<verb>.public` / `ethos.read.all`,
+ *     `gamma.read`, `compute.invoke`, and `data.*` scopes.
+ *   - A circle mandate cannot carry any ethos scope on the `self` zone.
+ */
 function validateScopesAgainstSphere(
   scopes: readonly string[],
   sphere: Sphere,
 ): void {
   for (const s of scopes) {
-    if (s === "ethos.write.public" && sphere !== "public") {
-      throw new Error(
-        `scope ${s} requires actor_sphere=public (got ${sphere})`,
-      );
-    }
-    if (s === "ethos.write.circle" && sphere !== "circle") {
-      throw new Error(
-        `scope ${s} requires actor_sphere=circle (got ${sphere})`,
-      );
-    }
-    if (s === "ethos.write.self" && sphere !== "self") {
-      throw new Error(
-        `scope ${s} requires actor_sphere=self (got ${sphere})`,
-      );
+    const p = parseEthosVerbZone(s);
+    if (p && p.zone !== "all" && MUTATING_ETHOS_VERBS.has(p.verb) && sphere !== p.zone) {
+      throw new Error(`scope ${s} requires actor_sphere=${p.zone} (got ${sphere})`);
     }
   }
   if (sphere === "public") {
     for (const s of scopes) {
+      const p = parseEthosVerbZone(s);
       const ok =
-        s === "ethos.read.public" ||
-        s === "ethos.read.all" ||
-        s === "ethos.write.public" ||
+        (p !== null && (p.zone === "public" || p.zone === "all")) ||
         s === "gamma.read" ||
+        s === "compute.invoke" ||
         // Data scopes (`data.<collection>.<action>`) are sphere-neutral and
-        // permitted under every sphere, including public — mirrors
-        // protocol-core `validateScopesAgainstSphere`. Keep in lockstep.
+        // permitted under every sphere — keep in lockstep with protocol-core.
         s.startsWith("data.");
       if (!ok) {
-        throw new Error(
-          `scope ${s} is not permitted for the public sphere`,
-        );
+        throw new Error(`scope ${s} is not permitted for the public sphere`);
+      }
+    }
+  }
+  if (sphere === "circle") {
+    for (const s of scopes) {
+      const p = parseEthosVerbZone(s);
+      if (p && p.zone === "self") {
+        throw new Error(`scope ${s} (zone self) cannot be granted on a circle mandate`);
       }
     }
   }

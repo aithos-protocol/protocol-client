@@ -5,6 +5,25 @@ All notable changes to `@aithos/protocol-client` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this package adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-alpha.21] — 2026-06-07
+
+### Changed
+
+- **Ethos verb-scopes (draft `bundle-v0.3-section-verb-scopes.md`).** Client-side
+  mint brought into lockstep with protocol-core 0.9.0:
+  - `crypto/mandate.ts`: `MANDATE_VERSION_CURRENT` 0.3.0 → **0.5.0**;
+    `validateScopesAgainstSphere` generalised to the verb grammar
+    (`ethos.<verb>.<zone>[#…]`) — a mutating verb (write/edit/append/delete)
+    requires the matching actor sphere, the public sphere allows any
+    `ethos.*.public` / `ethos.read.all` (+ `gamma.read`, `compute.invoke`,
+    `data.*`), and a circle mandate may carry no `self`-zone ethos scope.
+  - `delegate-recipients.ts`: wrap-list membership now recognises every
+    read-bearing verb (read/edit/append/write, with or without a selector) on a
+    zone, so delegates granted the new verbs are still sealed for (zone-level
+    wrap model unchanged; per-section narrowing in the owner-author path is
+    tracked separately).
+- Peer/dep `@aithos/protocol-core` → `^0.9.0`.
+
 ## [0.1.0-alpha.20] — 2026-06-06
 
 ### Added

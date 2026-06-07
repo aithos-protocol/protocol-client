@@ -40,10 +40,36 @@ export type SealedZone = "circle" | "self";
  * impliedRead: a delegate granted `write.X` must be able to decrypt X
  * to republish, so we treat write.X as also implying read.X here.
  */
-const ZONE_SCOPES: Readonly<Record<SealedZone, readonly string[]>> = {
-  circle: ["ethos.read.circle", "ethos.write.circle"],
-  self: ["ethos.read.self", "ethos.write.self"],
-};
+/**
+ * Read-bearing ethos verbs (§4.8.2′): a delegate holding any of these on a zone
+ * must be able to decrypt it, so it belongs in the wrap list. `delete` alone
+ * does not bear read. (Per-section narrowing by selector is a separate concern —
+ * the current wrap model is zone-level; see module note.)
+ */
+const READ_BEARING_VERBS: ReadonlySet<string> = new Set([
+  "read",
+  "edit",
+  "append",
+  "write",
+]);
+
+/** True iff `scope` is a read-bearing ethos verb on `zone` (or `ethos.read.all`). */
+function scopeIsReadBearingForZone(scope: string, zone: SealedZone): boolean {
+  if (!scope.startsWith("ethos.")) return false;
+  const hash = scope.indexOf("#");
+  const head = hash === -1 ? scope : scope.slice(0, hash);
+  const parts = head.split(".");
+  if (parts.length !== 3) return false;
+  const verb = parts[1]!;
+  const z = parts[2]!;
+  if (!READ_BEARING_VERBS.has(verb)) return false;
+  return z === zone || z === "all";
+}
+
+/** True iff any scope is read-bearing for `zone`. */
+function anyReadBearingForZone(scopes: readonly string[], zone: SealedZone): boolean {
+  return scopes.some((s) => scopeIsReadBearingForZone(s, zone));
+}
 
 /** One page of mandate cards, shaped like `Page<MandateCard>` server-side. */
 interface MandateCard {
@@ -120,18 +146,8 @@ export function mandateToRecipients(
   // recipients into the zone's wrap list.
   const out: { circle?: EncryptRecipient; self?: EncryptRecipient } = {};
   const scopes = mandate.scopes ?? [];
-  if (
-    scopes.includes("ethos.read.circle") ||
-    scopes.includes("ethos.write.circle")
-  ) {
-    out.circle = recipient;
-  }
-  if (
-    scopes.includes("ethos.read.self") ||
-    scopes.includes("ethos.write.self")
-  ) {
-    out.self = recipient;
-  }
+  if (anyReadBearingForZone(scopes, "circle")) out.circle = recipient;
+  if (anyReadBearingForZone(scopes, "self")) out.self = recipient;
   return out;
 }
 
@@ -170,7 +186,7 @@ export async function fetchActiveDelegateRecipients(
     if (typeof row.not_after === "number" && row.not_after < nowSec) continue;
     const rowScopes = row.scopes ?? [];
     for (const z of ["circle", "self"] as const) {
-      if (ZONE_SCOPES[z].some((s) => rowScopes.includes(s))) {
+      if (anyReadBearingForZone(rowScopes, z)) {
         perZoneCandidates[z].push(row);
       }
     }
@@ -302,8 +318,6 @@ export async function fetchZoneRecipientsForDelegateWrite(
   const { subjectDid, zone, writer } = opts;
   const now = opts.now ?? new Date();
   const nowSec = Math.floor(now.getTime() / 1000);
-  const readScope = `ethos.read.${zone}`;
-  const writeScope = `ethos.write.${zone}`;
 
   const recipients: EncryptRecipient[] = [];
   const seen = new Set<string>();
@@ -389,7 +403,7 @@ export async function fetchZoneRecipientsForDelegateWrite(
     if (typeof row.not_before === "number" && row.not_before > nowSec) return false;
     if (typeof row.not_after === "number" && row.not_after < nowSec) return false;
     const scopes = row.scopes ?? [];
-    return scopes.includes(readScope) || scopes.includes(writeScope);
+    return anyReadBearingForZone(scopes, zone);
   });
 
   await Promise.all(
