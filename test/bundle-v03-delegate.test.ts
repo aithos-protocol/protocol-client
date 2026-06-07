@@ -15,7 +15,7 @@ import { dirname, join } from "node:path";
 
 import { createBrowserIdentity, signedDidDocument } from "../src/crypto/identity.js";
 import { generateKeyPair } from "../src/crypto/ed25519.js";
-import { edSeedToX25519Secret } from "../src/crypto/kex.js";
+import { edSeedToX25519Secret, edPubToX25519Pub } from "../src/crypto/kex.js";
 import { ed25519PublicKeyToMultibase } from "../src/crypto/encoding.js";
 import {
   authorBundleV03,
@@ -23,6 +23,7 @@ import {
   ownerZoneKexPubkey,
   type AuthoredV03,
   type DelegateAuthorV03,
+  type DelegateReadGrant,
 } from "../src/crypto/bundle-v03-write.js";
 import {
   readSection,
@@ -147,5 +148,96 @@ describe("v0.3 delegate authoring — conformance vs protocol-core", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("v0.3 owner author — per-section delegate recipients (§3.5.7′)", () => {
+  function setup(scopes: readonly string[]) {
+    const id = createBrowserIdentity("carol", "Carol");
+    const subjectDid = id.did;
+    const didJson = new TextEncoder().encode(JSON.stringify(signedDidDocument(id)));
+    const agent = generateKeyPair();
+    const pubkeyMultibase = ed25519PublicKeyToMultibase(agent.publicKey);
+    const grant: DelegateReadGrant = {
+      recipient: {
+        didUrl: `agent:scoped#${pubkeyMultibase}`,
+        x25519PublicKey: edPubToX25519Pub(agent.publicKey),
+      },
+      scopes,
+    };
+    const ed = authorBundleV03({
+      identity: id,
+      subjectDid,
+      subjectHandle: "carol",
+      displayName: "Carol",
+      didJson,
+      zones: { self: [sec("sec_a", "A", "alpha"), sec("sec_b", "B", "beta")] },
+      delegateGrants: { self: [grant] },
+      now: new Date("2026-06-07T10:00:00Z"),
+    });
+    const zm = (ed.manifest as ManifestV03).zones.self!;
+    const aDesc = zm.sections.find((s) => s.section_id === "sec_a")!;
+    const bDesc = zm.sections.find((s) => s.section_id === "sec_b")!;
+    const delReader = delegateSectionReader("agent:scoped", pubkeyMultibase, agent.seed);
+    const ownerReader = ownerSectionReader(subjectDid, "self", id.self.seed);
+    const canRead = (desc: typeof aDesc, reader: typeof delReader) =>
+      readSection(zm, desc, ed.blobs.get(desc.file)!, subjectDid, reader).accessible;
+    return { aDesc, bDesc, delReader, ownerReader, canRead };
+  }
+
+  test("a section-scoped grant (#id=) seals the delegate into ONLY its section", () => {
+    const { aDesc, bDesc, delReader, ownerReader, canRead } = setup([
+      "ethos.edit.self#id=sec_a",
+    ]);
+    assert.equal(canRead(aDesc, delReader), true, "delegate reads its scoped section");
+    assert.equal(canRead(bDesc, delReader), false, "delegate cannot read the out-of-scope section");
+    // Owner always reads everything.
+    assert.equal(canRead(aDesc, ownerReader), true);
+    assert.equal(canRead(bDesc, ownerReader), true);
+  });
+
+  test("a whole-zone read grant seals the delegate into every section", () => {
+    const { aDesc, bDesc, delReader, canRead } = setup(["ethos.read.self"]);
+    assert.equal(canRead(aDesc, delReader), true);
+    assert.equal(canRead(bDesc, delReader), true);
+  });
+
+  test("a prefix grant seals only matching ids; an append verb still bears read", () => {
+    const id = createBrowserIdentity("dave", "Dave");
+    const subjectDid = id.did;
+    const didJson = new TextEncoder().encode(JSON.stringify(signedDidDocument(id)));
+    const agent = generateKeyPair();
+    const pubkeyMultibase = ed25519PublicKeyToMultibase(agent.publicKey);
+    const grant: DelegateReadGrant = {
+      recipient: {
+        didUrl: `agent:gmail#${pubkeyMultibase}`,
+        x25519PublicKey: edPubToX25519Pub(agent.publicKey),
+      },
+      scopes: ["ethos.append.self#prefix=gmail:"],
+    };
+    const ed = authorBundleV03({
+      identity: id,
+      subjectDid,
+      subjectHandle: "dave",
+      displayName: "Dave",
+      didJson,
+      zones: { self: [sec("gmail:1", "Mail", "hi"), sec("note:1", "Note", "secret")] },
+      delegateGrants: { self: [grant] },
+      now: new Date("2026-06-07T10:00:00Z"),
+    });
+    const zm = (ed.manifest as ManifestV03).zones.self!;
+    const gDesc = zm.sections.find((s) => s.section_id === "gmail:1")!;
+    const nDesc = zm.sections.find((s) => s.section_id === "note:1")!;
+    const delReader = delegateSectionReader("agent:gmail", pubkeyMultibase, agent.seed);
+    assert.equal(
+      readSection(zm, gDesc, ed.blobs.get(gDesc.file)!, subjectDid, delReader).accessible,
+      true,
+      "append delegate reads its gmail:* section",
+    );
+    assert.equal(
+      readSection(zm, nDesc, ed.blobs.get(nDesc.file)!, subjectDid, delReader).accessible,
+      false,
+      "append delegate cannot read note:1",
+    );
   });
 });

@@ -263,6 +263,99 @@ export async function fetchActiveDelegateRecipients(
 }
 
 /* -------------------------------------------------------------------------- */
+/*  Per-section grants (v0.3 owner author, §3.5.7′)                            */
+/* -------------------------------------------------------------------------- */
+
+/** A delegate's wrap entry plus its mandate scopes — the owner author evaluates
+ *  the scopes per section (`coversRead`) to seal each section to only the
+ *  delegates entitled to read it. */
+export interface DelegateGrantWithScopes {
+  readonly recipient: EncryptRecipient;
+  readonly scopes: readonly string[];
+}
+
+export interface DelegateGrantsByZone {
+  readonly circle: readonly DelegateGrantWithScopes[];
+  readonly self: readonly DelegateGrantWithScopes[];
+  readonly errors: DelegateRecipientsByZone["errors"];
+}
+
+/**
+ * Like {@link fetchActiveDelegateRecipients} but keeps each active grant's
+ * mandate `scopes`, so the v0.3 owner author can derive **per-section**
+ * recipients (a whole-zone grant matches every section; a section-scoped grant
+ * only its own — spec §3.5.7′). Same listing/resolution surface (public reads),
+ * same non-fatal error handling.
+ */
+export async function fetchActiveDelegateGrants(
+  ownerDid: string,
+  now: Date = new Date(),
+): Promise<DelegateGrantsByZone> {
+  const nowSec = Math.floor(now.getTime() / 1000);
+  const rows = await collectMandates(ownerDid);
+
+  const perZoneCandidates: Record<SealedZone, MandateCard[]> = { circle: [], self: [] };
+  for (const row of rows) {
+    if (typeof row.not_before === "number" && row.not_before > nowSec) continue;
+    if (typeof row.not_after === "number" && row.not_after < nowSec) continue;
+    const rowScopes = row.scopes ?? [];
+    for (const z of ["circle", "self"] as const) {
+      if (anyReadBearingForZone(rowScopes, z)) perZoneCandidates[z].push(row);
+    }
+  }
+
+  const uniqueIds = new Set<string>();
+  for (const z of ["circle", "self"] as const) {
+    for (const r of perZoneCandidates[z]) uniqueIds.add(r.mandate_id);
+  }
+
+  const fetched = new Map<string, SignedMandate | null>();
+  const errors: DelegateRecipientsByZone["errors"][number][] = [];
+  await Promise.all(
+    Array.from(uniqueIds).map(async (mid) => {
+      try {
+        const resp = await readRpc<GetMandateResponse>("aithos.get_mandate", { mandate_id: mid });
+        fetched.set(mid, resp.revoked ? null : resp.mandate.object);
+      } catch (e) {
+        const reason =
+          e instanceof AithosRpcError ? `${e.code}: ${e.message}` : (e as Error).message;
+        for (const z of ["circle", "self"] as const) {
+          if (perZoneCandidates[z].some((r) => r.mandate_id === mid)) {
+            errors.push({ mandate_id: mid, zone: z, reason });
+          }
+        }
+        fetched.set(mid, null);
+      }
+    }),
+  );
+
+  const out: Record<SealedZone, DelegateGrantWithScopes[]> = { circle: [], self: [] };
+  for (const z of ["circle", "self"] as const) {
+    for (const row of perZoneCandidates[z]) {
+      const mandate = fetched.get(row.mandate_id);
+      if (!mandate) continue;
+      const pubkeyMb = mandate.grantee?.pubkey;
+      const granteeId = mandate.grantee?.id;
+      if (!pubkeyMb || !granteeId) {
+        errors.push({ mandate_id: row.mandate_id, zone: z, reason: "grantee.pubkey/.id missing" });
+        continue;
+      }
+      try {
+        const edPub = multibaseToEd25519PublicKey(pubkeyMb);
+        out[z].push({
+          recipient: { didUrl: `${granteeId}#${pubkeyMb}`, x25519PublicKey: edPubToX25519Pub(edPub) },
+          scopes: mandate.scopes ?? [],
+        });
+      } catch (e) {
+        errors.push({ mandate_id: row.mandate_id, zone: z, reason: `pubkey convert failed: ${(e as Error).message}` });
+      }
+    }
+  }
+
+  return { circle: out.circle, self: out.self, errors };
+}
+
+/* -------------------------------------------------------------------------- */
 /*  Delegate-write recipient discovery (Phase E.2)                            */
 /* -------------------------------------------------------------------------- */
 

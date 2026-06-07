@@ -7,6 +7,18 @@ and this package adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.0-alpha.21] — 2026-06-07
 
+### Added
+
+- **Per-section delegate recipients in the v0.3 owner author (§3.5.7′).**
+  `authorBundleV03` now accepts `delegateGrants` and seals each section's DEK to
+  the subject **plus every delegate whose read-bearing verb-scopes cover that
+  specific section** — a whole-zone read grant matches every section, a
+  section-scoped grant only its own (carry-forward re-encrypts only the sections
+  whose recipient set changed). New `fetchActiveDelegateGrants` (list/get-mandate
+  + scopes) feeds it from `publishEthosEditionV03Owner`, and a browser-safe
+  `crypto/ethos-scope.ts` (`parseEthosScope` / `coversRead`) does the matching.
+  Closes per-section READ scoping in the SDK/app owner-publish path.
+
 ### Changed
 
 - **Ethos verb-scopes (draft `bundle-v0.3-section-verb-scopes.md`).** Client-side

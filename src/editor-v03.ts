@@ -34,6 +34,7 @@ import {
   type SphereName,
 } from "./crypto/bundle-v03.js";
 import { authorBundleV03 } from "./crypto/bundle-v03-write.js";
+import { fetchActiveDelegateGrants } from "./delegate-recipients.js";
 
 export class EditV03Error extends Error {
   readonly step: string;
@@ -180,6 +181,11 @@ export async function publishEthosEditionV03Owner(args: PublishV03OwnerArgs): Pr
     };
   }
 
+  // Active delegate grants → per-section recipients (§3.5.7′): each section is
+  // sealed to the subject plus every delegate whose read-bearing scopes cover
+  // it. Best-effort: a grant we can't resolve is skipped (surfaced in errors),
+  // never blocking the owner's own publish.
+  const grants = await fetchActiveDelegateGrants(did);
   const { manifest, blobs } = authorBundleV03({
     identity: browserId,
     subjectDid: did,
@@ -187,6 +193,7 @@ export async function publishEthosEditionV03Owner(args: PublishV03OwnerArgs): Pr
     displayName: displayName ?? handle,
     didJson,
     zones,
+    delegateGrants: { circle: grants.circle, self: grants.self },
     ...(prev ? { prev } : {}),
   });
 

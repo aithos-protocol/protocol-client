@@ -24,6 +24,7 @@ import { edSeedToX25519Secret } from "./kex.js";
 import { wrapDek } from "./encrypt.js";
 import { sphereDidUrl, type BrowserIdentity } from "./identity.js";
 import type { Section } from "./manifest.js";
+import { coversRead } from "./ethos-scope.js";
 import {
   sectionAad,
   titleAad,
@@ -237,6 +238,18 @@ function allocEditionVersion(now: Date, prevVersion: string | undefined): string
 /*  Author a complete v0.3 edition                                            */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * A delegate that may READ part of an encrypted zone, projected for the owner
+ * author's per-section recipient derivation (§3.5.7′). `recipient` is the
+ * delegate's wrap entry; `scopes` are the mandate's scopes, evaluated per
+ * section via {@link coversRead} so the delegate is sealed into ONLY the
+ * sections its read-bearing verb-scopes match.
+ */
+export interface DelegateReadGrant {
+  readonly recipient: SectionRecipient;
+  readonly scopes: readonly string[];
+}
+
 export interface AuthorV03Args {
   readonly identity: BrowserIdentity;
   readonly subjectDid: string;
@@ -246,6 +259,12 @@ export interface AuthorV03Args {
   readonly didJson: Uint8Array;
   /** Sections per zone, in display order. */
   readonly zones: Partial<Record<SphereName, readonly Section[]>>;
+  /**
+   * Active delegate read-grants for the encrypted zones. Each section's DEK is
+   * wrapped to the subject PLUS every delegate here whose scopes cover reading
+   * that specific section. Omit (or empty) for a subject-only bundle.
+   */
+  readonly delegateGrants?: Partial<Record<"circle" | "self", readonly DelegateReadGrant[]>>;
   /** Previous edition for the chain + carry-forward. `getBlob` fetches a prior blob by file path. */
   readonly prev?: { readonly manifest: ManifestV03; readonly getBlob: (file: string) => Uint8Array };
   readonly now?: Date;
@@ -294,16 +313,40 @@ export function authorBundleV03(args: AuthorV03Args): AuthoredV03 {
   for (const zone of SPHERES) {
     const encrypted = zone !== "public";
     const indexEncrypted = ZONE_INDEX_ENCRYPTED[zone];
-    const recipients: SectionRecipient[] = encrypted
-      ? [subjectRecipient(args.identity, args.subjectDid, zone as "circle" | "self")]
+    const subjectRec = encrypted
+      ? subjectRecipient(args.identity, args.subjectDid, zone as "circle" | "self")
+      : null;
+    const grantsForZone = encrypted
+      ? args.delegateGrants?.[zone as "circle" | "self"] ?? []
       : [];
     const prevZone = args.prev?.manifest.zones[zone];
     const descriptors: SectionDescriptor[] = [];
 
     for (const section of args.zones[zone] ?? []) {
+      // Per-section recipients (§3.5.7′): the subject always, plus every
+      // delegate whose read-bearing verb-scopes cover THIS section. A whole-zone
+      // read grant matches every section; a section-scoped grant only its own.
+      // Public is plaintext → no recipients.
+      const recipients: SectionRecipient[] = encrypted
+        ? [
+            subjectRec!,
+            ...grantsForZone
+              .filter((g) =>
+                coversRead(g.scopes, zone as "circle" | "self", {
+                  id: section.id,
+                  ...(section.tags ? { tags: section.tags } : {}),
+                }),
+              )
+              .map((g) => g.recipient),
+          ]
+        : [];
+
       const plaintext = renderSectionMarkdown(section);
       const sha = sha256hex(plaintext);
       const prevDesc = prevZone?.sections.find((s) => s.section_id === section.id);
+      // Carry-forward compares THIS section's recipient set, so granting or
+      // revoking a section-scoped delegate re-encrypts only the sections whose
+      // recipients actually changed (§3.5.6′).
       const canCarry =
         !!args.prev &&
         !!prevDesc &&
