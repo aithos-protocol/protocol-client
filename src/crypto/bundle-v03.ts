@@ -58,6 +58,14 @@ export interface SectionDescriptor {
   /** Relative path of the blob: `public/<id>.md` or `circle|self/<id>.enc`. */
   readonly file: string;
   readonly sha256_of_plaintext: string;
+  /**
+   * Content-address (sha256 hex) of the STORED bytes (markdown for public,
+   * ciphertext otherwise). Optional/additive: when present the blob is stored
+   * deduplicated at `ethos/{did}/blobs/{blob_sha}` and an edition may upload only
+   * the changed sections (carry-forward omits the blob). Absent on legacy
+   * editions, which read from `editions/{height}/{file}`.
+   */
+  readonly blob_sha?: string;
   readonly gamma_ref: string;
   /** Clear title (public / circle). Absent on the encrypted self index. */
   readonly title?: string;

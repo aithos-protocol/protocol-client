@@ -25,14 +25,28 @@ import type { Section } from "../src/crypto/manifest.js";
 
 const core = await import("@aithos/protocol-core");
 
-function writeBundle(authored: AuthoredV03, didJson: Uint8Array): string {
+// The author returns blobs keyed by `blob_sha` (delta upload): only the
+// changed/new sections, carry-forward omitted. protocol-core verifies a
+// SELF-CONTAINED directory (every section present, addressed by file path), so we
+// reconstruct one: for each descriptor, write its blob — resolved by `blob_sha`
+// from this edition's delta plus any prior editions' blobs — to `dir/desc.file`.
+function writeBundle(
+  authored: AuthoredV03,
+  didJson: Uint8Array,
+  priorBlobs?: Map<string, Uint8Array>,
+): string {
   const dir = mkdtempSync(join(tmpdir(), "pc-v03-out-"));
   writeFileSync(join(dir, "manifest.json"), JSON.stringify(authored.manifest));
   writeFileSync(join(dir, "did.json"), didJson);
-  for (const [file, bytes] of authored.blobs) {
-    const abs = join(dir, file);
-    mkdirSync(dirname(abs), { recursive: true });
-    writeFileSync(abs, bytes);
+  for (const zone of Object.values(authored.manifest.zones)) {
+    for (const desc of zone?.sections ?? []) {
+      const sha = desc.blob_sha!;
+      const bytes = authored.blobs.get(sha) ?? priorBlobs?.get(sha);
+      if (!bytes) throw new Error(`missing blob for ${desc.file} (sha ${sha})`);
+      const abs = join(dir, desc.file);
+      mkdirSync(dirname(abs), { recursive: true });
+      writeFileSync(abs, bytes);
+    }
   }
   return dir;
 }
@@ -120,11 +134,19 @@ describe("v0.3 write mirror — conformance vs protocol-core", () => {
     assert.equal(ed2.manifest.edition.height, 2);
     assert.equal(ed2.manifest.edition.supersedes, ed1.manifest.bundle_id);
 
-    const routineFile = "self/sec_routine.enc";
-    const goalsFile = "self/sec_goals.enc";
-    // Routine carried forward byte-identical; Goals re-encrypted (differs).
-    assert.deepEqual([...ed2.blobs.get(routineFile)!], [...ed1.blobs.get(routineFile)!]);
-    assert.notDeepEqual([...ed2.blobs.get(goalsFile)!], [...ed1.blobs.get(goalsFile)!]);
+    // Delta semantics: Routine is unchanged → same content-address, carried
+    // forward (its blob is OMITTED from ed2's upload and reused by sha server-side).
+    // Goals changed → new content-address, present in ed2's upload.
+    const find = (m: ManifestV03, id: string) =>
+      m.zones.self!.sections.find((s) => s.section_id === id)!;
+    const r1 = find(ed1.manifest as ManifestV03, "sec_routine");
+    const r2 = find(ed2.manifest as ManifestV03, "sec_routine");
+    const g1 = find(ed1.manifest as ManifestV03, "sec_goals");
+    const g2 = find(ed2.manifest as ManifestV03, "sec_goals");
+    assert.equal(r2.blob_sha, r1.blob_sha, "Routine unchanged → same blob_sha");
+    assert.equal(ed2.blobs.has(r2.blob_sha!), false, "carried-forward blob omitted from delta");
+    assert.notEqual(g2.blob_sha, g1.blob_sha, "Goals changed → new blob_sha");
+    assert.equal(ed2.blobs.has(g2.blob_sha!), true, "changed blob present in delta");
 
     // The client can read its own ed2 self index (owner key).
     const selfReader = ownerSectionReader(subjectDid, "self", id.self.seed);

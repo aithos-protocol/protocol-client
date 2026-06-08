@@ -36,14 +36,31 @@ import type { Section } from "../src/crypto/manifest.js";
 
 const core = await import("@aithos/protocol-core");
 
-function writeBundle(authored: AuthoredV03, didJson: Uint8Array): string {
+// The author keys blobs by blob_sha and omits carry-forward. Resolve a
+// descriptor's bytes from this edition's delta map plus any prior editions.
+function blobFor(
+  desc: { blob_sha?: string; file: string },
+  ...maps: Array<ReadonlyMap<string, Uint8Array>>
+): Uint8Array {
+  for (const m of maps) {
+    const b = m.get(desc.blob_sha!);
+    if (b) return b;
+  }
+  throw new Error(`no blob for ${desc.file} (sha ${desc.blob_sha})`);
+}
+
+// Reconstruct a SELF-CONTAINED bundle dir (every section present, by file path)
+// from the delta blobs + any prior editions, so protocol-core can verify it.
+function writeBundle(authored: AuthoredV03, didJson: Uint8Array, prior?: ReadonlyMap<string, Uint8Array>): string {
   const dir = mkdtempSync(join(tmpdir(), "pc-v03-del-"));
   writeFileSync(join(dir, "manifest.json"), JSON.stringify(authored.manifest));
   writeFileSync(join(dir, "did.json"), didJson);
-  for (const [file, bytes] of authored.blobs) {
-    const abs = join(dir, file);
-    mkdirSync(dirname(abs), { recursive: true });
-    writeFileSync(abs, bytes);
+  for (const zone of Object.values(authored.manifest.zones)) {
+    for (const desc of zone?.sections ?? []) {
+      const abs = join(dir, desc.file);
+      mkdirSync(dirname(abs), { recursive: true });
+      writeFileSync(abs, blobFor(desc, authored.blobs, ...(prior ? [prior] : [])));
+    }
   }
   return dir;
 }
@@ -103,8 +120,12 @@ describe("v0.3 delegate authoring — conformance vs protocol-core", () => {
     assert.equal(sig.key, pubkeyMultibase, "manifest signed with the delegate key");
     assert.equal(sig.authorized_by, "mandate_test01");
 
-    // The owner's prior section carried forward byte-identical.
-    assert.deepEqual([...ed2.blobs.get("self/sec_routine.enc")!], [...ed1.blobs.get("self/sec_routine.enc")!]);
+    // The owner's prior section carried forward by content-address: its blob is
+    // OMITTED from the delegate's delta edition and reused by sha server-side.
+    const r1c = (ed1.manifest as ManifestV03).zones.self!.sections.find((s) => s.section_id === "sec_routine")!;
+    const r2c = (ed2.manifest as ManifestV03).zones.self!.sections.find((s) => s.section_id === "sec_routine")!;
+    assert.equal(r2c.blob_sha, r1c.blob_sha, "carried forward by content-address");
+    assert.equal(ed2.blobs.has(r2c.blob_sha!), false, "carried-forward blob omitted from delta");
 
     // Owner can read BOTH (its own + the delegate's); delegate reads ONLY its own.
     const zm = (ed2.manifest as ManifestV03).zones.self!;
@@ -114,13 +135,13 @@ describe("v0.3 delegate authoring — conformance vs protocol-core", () => {
     const ownerReader = ownerSectionReader(subjectDid, "self", id.self.seed);
     const delReader = delegateSectionReader("agent:gmail", pubkeyMultibase, agent.seed);
 
-    const ownerInbox = readSection(zm, inboxDesc, ed2.blobs.get(inboxDesc.file)!, subjectDid, ownerReader);
+    const ownerInbox = readSection(zm, inboxDesc, blobFor(inboxDesc, ed2.blobs, ed1.blobs), subjectDid, ownerReader);
     assert.ok(ownerInbox.accessible && ownerInbox.section!.body === "3 unread.");
 
-    const delInbox = readSection(zm, inboxDesc, ed2.blobs.get(inboxDesc.file)!, subjectDid, delReader);
+    const delInbox = readSection(zm, inboxDesc, blobFor(inboxDesc, ed2.blobs, ed1.blobs), subjectDid, delReader);
     assert.ok(delInbox.accessible && delInbox.section!.body === "3 unread.");
 
-    const delRoutine = readSection(zm, routineDesc, ed2.blobs.get(routineDesc.file)!, subjectDid, delReader);
+    const delRoutine = readSection(zm, routineDesc, blobFor(routineDesc, ed2.blobs, ed1.blobs), subjectDid, delReader);
     assert.equal(delRoutine.accessible, false, "delegate is NOT a recipient of the owner's section");
 
     // Self index: owner sees both titles; delegate sees only its own.
@@ -134,7 +155,7 @@ describe("v0.3 delegate authoring — conformance vs protocol-core", () => {
 
     // protocol-core verifies the delegate-signed edition (resolver returns the
     // delegate pubkey) + decrypts every section with the owner readers.
-    const dir = writeBundle(ed2, didJson);
+    const dir = writeBundle(ed2, didJson, ed1.blobs);
     try {
       const reader = (z: "circle" | "self") => ({
         didUrl: `${subjectDid}#${z}-kex`,
@@ -181,7 +202,7 @@ describe("v0.3 owner author — per-section delegate recipients (§3.5.7′)", (
     const delReader = delegateSectionReader("agent:scoped", pubkeyMultibase, agent.seed);
     const ownerReader = ownerSectionReader(subjectDid, "self", id.self.seed);
     const canRead = (desc: typeof aDesc, reader: typeof delReader) =>
-      readSection(zm, desc, ed.blobs.get(desc.file)!, subjectDid, reader).accessible;
+      readSection(zm, desc, blobFor(desc, ed.blobs), subjectDid, reader).accessible;
     return { aDesc, bDesc, delReader, ownerReader, canRead };
   }
 
@@ -230,12 +251,12 @@ describe("v0.3 owner author — per-section delegate recipients (§3.5.7′)", (
     const nDesc = zm.sections.find((s) => s.section_id === "note:1")!;
     const delReader = delegateSectionReader("agent:gmail", pubkeyMultibase, agent.seed);
     assert.equal(
-      readSection(zm, gDesc, ed.blobs.get(gDesc.file)!, subjectDid, delReader).accessible,
+      readSection(zm, gDesc, blobFor(gDesc, ed.blobs), subjectDid, delReader).accessible,
       true,
       "append delegate reads its gmail:* section",
     );
     assert.equal(
-      readSection(zm, nDesc, ed.blobs.get(nDesc.file)!, subjectDid, delReader).accessible,
+      readSection(zm, nDesc, blobFor(nDesc, ed.blobs), subjectDid, delReader).accessible,
       false,
       "append delegate cannot read note:1",
     );

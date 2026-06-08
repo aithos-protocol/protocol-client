@@ -222,6 +222,10 @@ export async function publishEthosEditionV03Owner(args: PublishV03OwnerArgs): Pr
     const blobMap = new Map<string, Uint8Array>();
     for (const zone of SPHERES) {
       for (const desc of args.prevManifest.zones[zone]?.sections ?? []) {
+        // Content-addressed sections are carried forward by sha (omitted) or
+        // re-encrypted fresh — either way their prior blob is never re-uploaded,
+        // so skip the pre-fetch. Only legacy (no blob_sha) predecessors need it.
+        if (desc.blob_sha) continue;
         blobMap.set(desc.file, await fetchSectionBlob(did, desc.section_id));
       }
     }
@@ -251,10 +255,12 @@ export async function publishEthosEditionV03Owner(args: PublishV03OwnerArgs): Pr
     ...(prev ? { prev } : {}),
   });
 
-  // Per-section blobs → the publish input shape.
+  // Per-section blobs → the publish input shape. `blobs` is keyed by blob_sha
+  // (delta upload): one entry per CHANGED/new section; carried-forward sections
+  // are omitted and reused server-side from blobs/{blob_sha}.
   const blobsParam: Record<string, { bytes_base64: string }> = {};
-  for (const [file, bytes] of blobs) {
-    blobsParam[file] = { bytes_base64: bytesToBase64(bytes) };
+  for (const [sha, bytes] of blobs) {
+    blobsParam[sha] = { bytes_base64: bytesToBase64(bytes) };
   }
 
   const params = { manifest, blobs: blobsParam };
@@ -335,10 +341,14 @@ export async function publishEthosEditionV03Delegate(
   const ownerZonePubkey = ownerZoneKexPubkey(didDoc, did, delegate.actorSphere);
 
   // Carry-forward: patchEditionV03Delegate copies every zone the delegate can't
-  // read VERBATIM, so it needs all prior blobs pre-fetched (sync getBlob).
+  // read VERBATIM. With content-addressing it carries those by blob_sha (the
+  // server reuses the stored object), so the delegate no longer needs to
+  // pre-download opaque blobs of sections it can't read — only legacy (no
+  // blob_sha) predecessors still require a pre-fetch.
   const blobMap = new Map<string, Uint8Array>();
   for (const zone of SPHERES) {
     for (const desc of prevManifest.zones[zone]?.sections ?? []) {
+      if (desc.blob_sha) continue;
       blobMap.set(desc.file, await fetchSectionBlob(did, desc.section_id));
     }
   }
@@ -361,10 +371,12 @@ export async function publishEthosEditionV03Delegate(
     patch: args.patch,
   });
 
-  // Per-section blobs → the publish input shape.
+  // Per-section blobs → the publish input shape. `blobs` is keyed by blob_sha
+  // (delta upload): one entry per CHANGED/new section; carried-forward sections
+  // are omitted and reused server-side from blobs/{blob_sha}.
   const blobsParam: Record<string, { bytes_base64: string }> = {};
-  for (const [file, bytes] of blobs) {
-    blobsParam[file] = { bytes_base64: bytesToBase64(bytes) };
+  for (const [sha, bytes] of blobs) {
+    blobsParam[sha] = { bytes_base64: bytesToBase64(bytes) };
   }
 
   const params = { manifest, blobs: blobsParam };

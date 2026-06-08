@@ -158,6 +158,7 @@ export function writeSection(ctx: WriteSectionCtx, section: Section): WrittenSec
     section_id: string;
     file: string;
     sha256_of_plaintext: string;
+    blob_sha?: string;
     gamma_ref: string;
     title?: string;
     tags?: readonly string[];
@@ -185,7 +186,32 @@ export function writeSection(ctx: WriteSectionCtx, section: Section): WrittenSec
     desc.cipher = enc.cipher;
     blob = enc.ciphertext;
   }
+  // Content-address the STORED bytes (markdown for public, ciphertext otherwise).
+  // For public this equals sha256_of_plaintext; for encrypted zones it differs
+  // (fresh nonce/DEK each encryption) and is the stable address for the blob.
+  desc.blob_sha = bytesToHex(sha256(blob));
   return { descriptor: desc as SectionDescriptor, file, blob };
+}
+
+/**
+ * Carry a prior section forward into a delta (content-addressed) edition.
+ * Reuses the descriptor and uploads its blob ONLY when the predecessor was not
+ * yet content-addressed (legacy descriptor without `blob_sha`): then we compute
+ * the blob's sha, upload it once under `blobs/{sha}`, and stamp the descriptor so
+ * future editions can carry it by sha. When the predecessor already has
+ * `blob_sha`, the blob is omitted from the upload — the server reuses the
+ * deduplicated object (this is what makes per-section editing upload one blob).
+ */
+function carryForwardSection(
+  prevDesc: SectionDescriptor,
+  getBlob: (file: string) => Uint8Array,
+  blobs: Map<string, Uint8Array>,
+): SectionDescriptor {
+  if (prevDesc.blob_sha) return prevDesc;
+  const bytes = getBlob(prevDesc.file);
+  const sha = bytesToHex(sha256(bytes));
+  blobs.set(sha, bytes);
+  return { ...prevDesc, blob_sha: sha };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -355,12 +381,13 @@ export function authorBundleV03(args: AuthorV03Args): AuthoredV03 {
         (!encrypted || recipientLabelsEqual(prevDesc.cipher, recipients));
 
       if (canCarry && args.prev && prevDesc) {
-        // Reuse the prior blob + descriptor verbatim.
-        blobs.set(prevDesc.file, args.prev.getBlob(prevDesc.file));
-        descriptors.push(prevDesc);
+        // Unchanged section → carry forward. Its blob is re-uploaded only if the
+        // predecessor wasn't content-addressed yet; otherwise it is omitted and
+        // the server reuses the deduplicated blobs/{blob_sha} object.
+        descriptors.push(carryForwardSection(prevDesc, args.prev.getBlob, blobs));
       } else {
         const w = writeSection({ zone, encrypted, indexEncrypted, subjectDid: args.subjectDid, recipients }, section);
-        blobs.set(w.file, w.blob);
+        blobs.set(w.descriptor.blob_sha!, w.blob);
         descriptors.push(w.descriptor);
       }
     }
@@ -490,10 +517,11 @@ export function patchEditionV03Delegate(args: DelegatePatchArgs): AuthoredV03 {
   for (const z of SPHERES) {
     const prevZone = prev.zones[z];
     if (z !== zone) {
-      // Carry the whole zone forward verbatim (copy blobs + reuse the entry).
+      // Carry the whole zone forward (delta: blobs already content-addressed are
+      // omitted; legacy ones are uploaded once and the descriptor stamped).
       if (prevZone) {
-        for (const d of prevZone.sections) blobs.set(d.file, args.prev.getBlob(d.file));
-        zoneEntries[z] = prevZone;
+        const carried = prevZone.sections.map((d) => carryForwardSection(d, args.prev.getBlob, blobs));
+        zoneEntries[z] = { ...prevZone, sections: carried };
       }
       continue;
     }
@@ -510,19 +538,18 @@ export function patchEditionV03Delegate(args: DelegatePatchArgs): AuthoredV03 {
       const up = upserts.get(d.section_id);
       if (up) {
         const w = writeSection({ zone, encrypted: true, indexEncrypted, subjectDid: args.subjectDid, recipients }, up);
-        blobs.set(w.file, w.blob);
+        blobs.set(w.descriptor.blob_sha!, w.blob);
         descriptors.push(w.descriptor);
         upserts.delete(d.section_id);
       } else {
-        blobs.set(d.file, args.prev.getBlob(d.file));
-        descriptors.push(d);
+        descriptors.push(carryForwardSection(d, args.prev.getBlob, blobs));
       }
     }
     // New sections (upserts not present in prev), in input order.
     for (const s of args.patch.upserts ?? []) {
       if (!upserts.has(s.id)) continue; // already applied above
       const w = writeSection({ zone, encrypted: true, indexEncrypted, subjectDid: args.subjectDid, recipients }, s);
-      blobs.set(w.file, w.blob);
+      blobs.set(w.descriptor.blob_sha!, w.blob);
       descriptors.push(w.descriptor);
     }
 

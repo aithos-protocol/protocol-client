@@ -97,7 +97,7 @@ describe("publishEthosEditionV03Delegate — transport wiring", () => {
             (s) => s.section_id === reqBody.params.section_id,
           )!;
           return jsonResponse({
-            result: { object: { bytes_base64: bytesToBase64(ed1.blobs.get(desc.file)!) } },
+            result: { object: { bytes_base64: bytesToBase64(ed1.blobs.get(desc.blob_sha!)!) } },
           });
         }
         throw new Error("unexpected read method " + reqBody.method);
@@ -133,9 +133,11 @@ describe("publishEthosEditionV03Delegate — transport wiring", () => {
       assert.equal(sig.key, pubkeyMultibase, "manifest signed with the delegate key");
       assert.equal(sig.authorized_by, mandate.id);
 
-      // It fetched the DID doc and carried forward by fetching the prior blob.
+      // It fetched the DID doc. Delta: the carried-forward section is already
+      // content-addressed, so its blob is NOT pre-downloaded (the server reuses
+      // it by sha) — the delegate no longer fetches opaque blobs it can't read.
       assert.ok(reads.includes("aithos.get_identity"), "fetched identity");
-      assert.ok(reads.includes("aithos.get_ethos_section"), "fetched prior blob for carry-forward");
+      assert.ok(!reads.includes("aithos.get_ethos_section"), "carried blob NOT pre-fetched (delta)");
 
       // Exactly one publish POST, on the delegate path.
       assert.equal(writes.length, 1);
@@ -158,12 +160,20 @@ describe("publishEthosEditionV03Delegate — transport wiring", () => {
         ["sec_inbox", "sec_routine"],
       );
 
-      // Carry-forward: the owner's prior blob is reposted byte-identical.
+      // Delta upload: the POST carries ONLY the new section's blob (keyed by
+      // blob_sha); the owner's carried-forward section is omitted and reused
+      // server-side by sha.
+      const inboxDesc = pm.zones.self!.sections.find((s) => s.section_id === "sec_inbox")!;
       const routineDesc = pm.zones.self!.sections.find((s) => s.section_id === "sec_routine")!;
+      assert.deepEqual(
+        Object.keys(posted.params.blobs),
+        [inboxDesc.blob_sha],
+        "only the new section's blob is uploaded",
+      );
       assert.equal(
-        posted.params.blobs[routineDesc.file].bytes_base64,
-        bytesToBase64(ed1.blobs.get(routineDesc.file)!),
-        "prior section carried forward verbatim",
+        posted.params.blobs[routineDesc.blob_sha!],
+        undefined,
+        "carried-forward blob omitted from the POST",
       );
     } finally {
       globalThis.fetch = realFetch;
@@ -235,7 +245,7 @@ describe("loadEthosV03 — delegate reader path", () => {
             (s) => s.section_id === b.params.section_id,
           )!;
           return jsonResponse({
-            result: { object: { bytes_base64: bytesToBase64(ed.blobs.get(desc.file)!) } },
+            result: { object: { bytes_base64: bytesToBase64(ed.blobs.get(desc.blob_sha!)!) } },
           });
         }
       }
