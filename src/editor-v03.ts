@@ -110,7 +110,12 @@ export async function loadEthosV03(
   const signed = await readRpc<{ object: ManifestV03 }>("aithos.get_ethos_manifest", { did });
   const manifest = signed.object;
   if (!isV03Manifest(manifest)) {
-    throw new EditV03Error("manifest", `subject ${did} is not on a v0.3 edition (aithos=${(manifest as { aithos?: string }).aithos})`);
+    const ver = (manifest as { aithos?: string }).aithos;
+    throw new EditV03Error(
+      "manifest",
+      `subject ${did} is not on a v0.3 edition (aithos=${ver})`,
+      { legacy: true, aithos: ver },
+    );
   }
   const subjectDid = manifest.subject_did;
   const owner = identity && identity.did === did ? identity : undefined;

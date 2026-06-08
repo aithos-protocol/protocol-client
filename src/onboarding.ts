@@ -7,7 +7,7 @@
 //   1. generates a fresh identity (4 Ed25519 keypairs in memory)
 //   2. signs the did.json
 //   3. posts `aithos.publish_identity` with a root-signed envelope
-//   4. builds + signs the first edition (public zone only, MVP)
+//   4. builds + signs the first v0.3 edition (per-section, public zone)
 //   5. posts `aithos.publish_ethos_edition` with a public-sphere-signed envelope
 //   6. returns the identity + metadata so the UI can render a success page and
 //      offer a recovery-file download
@@ -18,10 +18,9 @@ import {
   type BrowserIdentity,
   type DidDocument,
 } from "./crypto/identity.js";
-import {
-  buildSignedFirstEdition,
-  type Manifest,
-} from "./crypto/manifest.js";
+import { authorBundleV03 } from "./crypto/bundle-v03-write.js";
+import { type ManifestV03 } from "./crypto/bundle-v03.js";
+import { addSectionToList } from "./editor.js";
 import { buildSignedEnvelope } from "./crypto/envelope.js";
 import { writeEndpoint } from "./endpoints.js";
 
@@ -36,7 +35,7 @@ export interface OnboardArgs {
 export interface OnboardResult {
   readonly identity: BrowserIdentity;
   readonly didDocument: DidDocument;
-  readonly manifest: Manifest;
+  readonly manifest: ManifestV03;
   readonly recoveryBlob: Blob;
 }
 
@@ -93,22 +92,29 @@ export async function runOnboarding(args: OnboardArgs): Promise<OnboardResult> {
     "publish_identity",
   );
 
-  /* ---- 4. first edition ---- */
-  const { manifest, publicMarkdownBytes } = buildSignedFirstEdition({
+  /* ---- 4. first edition (v0.3 per-section) ---- */
+  // Same did-hash convention the server enforces: JSON.stringify(doc, null, 2)+"\n".
+  const didJson = new TextEncoder().encode(JSON.stringify(signedDoc, null, 2) + "\n");
+  const publicSections = addSectionToList([], {
+    title: args.publicTitle,
+    body: args.publicBody,
+    ...(args.tags && args.tags.length > 0 ? { tags: args.tags } : {}),
+  });
+  const { manifest, blobs } = authorBundleV03({
     identity,
-    signedDidDoc: signedDoc,
-    publicTitle: args.publicTitle,
-    publicBody: args.publicBody,
-    tags: args.tags,
+    subjectDid: identity.did,
+    subjectHandle: identity.handle,
+    displayName: identity.displayName,
+    didJson,
+    zones: { public: publicSections },
   });
 
-  /* ---- 5. POST publish_ethos_edition ---- */
-  const editionParams = {
-    manifest,
-    zones: {
-      public: { bytes_base64: bytesToBase64Std(publicMarkdownBytes) },
-    },
-  };
+  /* ---- 5. POST publish_ethos_edition (v0.3: per-section blobs) ---- */
+  const blobsParam: Record<string, { bytes_base64: string }> = {};
+  for (const [file, bytes] of blobs) {
+    blobsParam[file] = { bytes_base64: bytesToBase64Std(bytes) };
+  }
+  const editionParams = { manifest, blobs: blobsParam };
   const editionEnv = buildSignedEnvelope({
     iss: identity.did,
     aud: writeEndpoint(),

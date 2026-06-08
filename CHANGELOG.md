@@ -5,6 +5,23 @@ All notable changes to `@aithos/protocol-client` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this package adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-alpha.23] — 2026-06-08
+
+### Changed
+
+- **`runOnboarding` now mints a v0.3 first edition.** It previously built a v0.2
+  monolithic edition via `buildSignedFirstEdition`, which `loadEthosV03` then
+  rejected — so a freshly-onboarded ethos was unreadable through the v0.3
+  transport. It now authors a v0.3 per-section edition (`authorBundleV03`, public
+  zone) after `publish_identity`, posting per-section blobs. Same did-hash
+  convention, so the server accepts it unchanged.
+
+### Added
+
+- `loadEthosV03` tags its "not a v0.3 edition" error with
+  `data: { legacy: true, aithos }`, so a caller (the SDK) can detect a legacy
+  v0.2 ethos and migrate it.
+
 ## [0.1.0-alpha.22] — 2026-06-08
 
 ### Added
