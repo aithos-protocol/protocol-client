@@ -584,3 +584,173 @@ export function patchEditionV03Delegate(args: DelegatePatchArgs): AuthoredV03 {
 
   return { manifest: signManifestV03Delegate(unsigned, args.delegate), blobs };
 }
+
+/* -------------------------------------------------------------------------- */
+/*  Owner (delta) authoring — patch the changed sections, carry the rest      */
+/* -------------------------------------------------------------------------- */
+
+export interface OwnerPatchArgs {
+  readonly identity: BrowserIdentity;
+  readonly subjectDid: string;
+  readonly subjectHandle: string;
+  readonly displayName: string;
+  /** The exact bytes of the published did.json (hashed into the manifest). */
+  readonly didJson: Uint8Array;
+  /** Active delegate read-grants for the encrypted zones (recipient derivation). */
+  readonly delegateGrants?: Partial<Record<"circle" | "self", readonly DelegateReadGrant[]>>;
+  /** Predecessor edition + a blob fetcher (only used to carry a LEGACY,
+   *  not-yet-content-addressed section forward; content-addressed carries omit
+   *  the blob and never call `getBlob`). */
+  readonly prev: { readonly manifest: ManifestV03; readonly getBlob: (file: string) => Uint8Array };
+  /** Per-zone changes. `upserts` carry the full plaintext of new/edited sections;
+   *  `deletes` are section ids. A zone absent from `patch` is carried forward
+   *  wholesale (its sections still get a recipient re-check for reseal). */
+  readonly patch: Partial<
+    Record<SphereName, { readonly upserts?: readonly Section[]; readonly deletes?: readonly string[] }>
+  >;
+  /** Decrypted tags for carried `self` sections (self tags are sealed inside
+   *  `title_cipher`, so the owner supplies them from the already-decrypted index
+   *  to evaluate `#tag=` grants on reseal). Keyed by `section_id`. */
+  readonly carriedSelfTags?: ReadonlyMap<string, readonly string[]>;
+  /** Fetch a carried section's plaintext — invoked ONLY when its recipient set
+   *  changed vs the predecessor and it must be re-encrypted to the new
+   *  recipients. Never called for an ordinary edit with unchanged grants. */
+  readonly fetchBody?: (zone: SphereName, sectionId: string) => Promise<Section>;
+  readonly now?: Date;
+}
+
+/**
+ * Author a new v0.3 edition AS THE OWNER from a per-zone PATCH instead of the
+ * full content. Mirrors {@link patchEditionV03Delegate} (carry every untouched
+ * section forward by descriptor — zero plaintext, the blob omitted and reused
+ * server-side) but signs with the owner `#public` key and, crucially, re-checks
+ * each carried section's recipient set against the current delegate grants. A
+ * carried section whose recipients are unchanged is reused byte-identical; one
+ * whose recipients changed (a section-scoped grant added/revoked) is re-encrypted
+ * to the new recipient set — its plaintext pulled on demand via {@link
+ * OwnerPatchArgs.fetchBody}. This preserves the "grants seal in on the next
+ * publish" semantics of the full author while reading only the sections that
+ * truly need it.
+ *
+ * Output is congruent with {@link authorBundleV03} given the same final state:
+ * identical carried descriptors, the same set of uploaded blobs, an
+ * owner-signed manifest linked at `prev.height + 1`.
+ */
+export async function patchEditionV03Owner(args: OwnerPatchArgs): Promise<AuthoredV03> {
+  const now = args.now ?? new Date();
+  const createdAt = now.toISOString();
+  const prev = args.prev.manifest;
+  const blobs = new Map<string, Uint8Array>();
+
+  const editionVersion = allocEditionVersion(now, prev.edition.version);
+  const bundleId = `urn:aithos:${args.subjectHandle}:${editionVersion}`;
+
+  const zoneEntries: Partial<Record<SphereName, BundleZoneV2>> = {};
+  for (const zone of SPHERES) {
+    const encrypted = zone !== "public";
+    const indexEncrypted = ZONE_INDEX_ENCRYPTED[zone];
+    const subjectRec = encrypted
+      ? subjectRecipient(args.identity, args.subjectDid, zone as "circle" | "self")
+      : null;
+    const grantsForZone = encrypted ? args.delegateGrants?.[zone as "circle" | "self"] ?? [] : [];
+    const prevZone = prev.zones[zone];
+    const zonePatch = args.patch[zone];
+    const deletes = new Set(zonePatch?.deletes ?? []);
+    const upserts = new Map((zonePatch?.upserts ?? []).map((s) => [s.id, s] as const));
+    const descriptors: SectionDescriptor[] = [];
+
+    // The recipient set for a section = the subject always, plus every delegate
+    // whose read-bearing verb-scopes cover THIS section (§3.5.7′). Public is
+    // plaintext → no recipients.
+    const recipientsFor = (id: string, tags: readonly string[] | undefined): SectionRecipient[] =>
+      encrypted
+        ? [
+            subjectRec!,
+            ...grantsForZone
+              .filter((g) =>
+                coversRead(g.scopes, zone as "circle" | "self", {
+                  id,
+                  ...(tags && tags.length > 0 ? { tags } : {}),
+                }),
+              )
+              .map((g) => g.recipient),
+          ]
+        : [];
+
+    const writeFresh = (section: Section): void => {
+      const recipients = recipientsFor(section.id, section.tags);
+      const w = writeSection(
+        { zone, encrypted, indexEncrypted, subjectDid: args.subjectDid, recipients },
+        section,
+      );
+      blobs.set(w.descriptor.blob_sha!, w.blob);
+      descriptors.push(w.descriptor);
+    };
+
+    // Existing sections in their prior order: drop deletes, re-encrypt upserts,
+    // otherwise carry forward — resealing only if recipients changed.
+    for (const d of prevZone?.sections ?? []) {
+      if (deletes.has(d.section_id)) continue;
+      const up = upserts.get(d.section_id);
+      if (up) {
+        writeFresh(up);
+        upserts.delete(d.section_id);
+        continue;
+      }
+      if (!encrypted) {
+        descriptors.push(carryForwardSection(d, args.prev.getBlob, blobs));
+        continue;
+      }
+      // self tags live in title_cipher → supplied via carriedSelfTags; circle
+      // exposes them on the descriptor directly.
+      const tags = zone === "self" ? args.carriedSelfTags?.get(d.section_id) : d.tags;
+      const recipients = recipientsFor(d.section_id, tags);
+      if (recipientLabelsEqual(d.cipher, recipients)) {
+        descriptors.push(carryForwardSection(d, args.prev.getBlob, blobs));
+      } else {
+        if (!args.fetchBody) {
+          throw new Error(
+            `patchEditionV03Owner: section ${d.section_id} (${zone}) needs a reseal but no fetchBody was provided`,
+          );
+        }
+        writeFresh(await args.fetchBody(zone, d.section_id));
+      }
+    }
+
+    // New sections (upserts with no predecessor), in patch input order.
+    for (const s of zonePatch?.upserts ?? []) {
+      if (!upserts.has(s.id)) continue; // already applied in the prior-order pass
+      writeFresh(s);
+    }
+
+    zoneEntries[zone] = {
+      format_version: "v2",
+      encrypted,
+      ...(indexEncrypted ? { index_encrypted: true } : {}),
+      sections: descriptors,
+    };
+  }
+
+  const didHashHex = bytesToHex(sha256(args.didJson));
+  const unsigned: ManifestV03 = {
+    aithos: "0.3.0",
+    bundle_id: bundleId,
+    subject_did: args.subjectDid,
+    subject_handle: args.subjectHandle,
+    display_name: args.displayName,
+    edition: {
+      version: editionVersion,
+      created_at: createdAt,
+      supersedes: prev.bundle_id,
+      prev_hash: "sha256:" + canonicalManifestV03HashHex(prev),
+      height: prev.edition.height + 1,
+    },
+    zones: zoneEntries as ManifestV03["zones"],
+    integrity: {
+      sha256_of_did_json: didHashHex,
+      manifest_signature: { alg: "ed25519", key: `${args.subjectDid}#public`, value: "" },
+    },
+  };
+
+  return { manifest: signManifestV03(args.identity, unsigned), blobs };
+}

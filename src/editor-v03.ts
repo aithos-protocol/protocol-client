@@ -40,6 +40,7 @@ import {
   authorBundleV03,
   ownerZoneKexPubkey,
   patchEditionV03Delegate,
+  patchEditionV03Owner,
   type DelegateAuthorV03,
 } from "./crypto/bundle-v03-write.js";
 import { fetchActiveDelegateGrants } from "./delegate-recipients.js";
@@ -223,6 +224,24 @@ export interface PublishV03OwnerArgs {
   readonly publicSections?: readonly Section[];
   readonly circleSections?: readonly Section[];
   readonly selfSections?: readonly Section[];
+  /**
+   * DELTA path (preferred for edits): a per-zone patch of only the changed
+   * sections. When present together with `prevManifest`, the edition is authored
+   * via {@link patchEditionV03Owner} — untouched sections carry forward by
+   * descriptor without ever being read or decrypted, so a single-section edit
+   * uploads one blob AND reads ~no other sections. Mutually exclusive in spirit
+   * with the `*Sections` fields (those drive the full re-author used for the
+   * first edition and v0.2 migration).
+   */
+  readonly patch?: Partial<
+    Record<SphereName, { readonly upserts?: readonly Section[]; readonly deletes?: readonly string[] }>
+  >;
+  /** Decrypted tags for carried `self` sections, so the author can evaluate
+   *  `#tag=` grants when deciding whether a carried section needs a reseal. */
+  readonly carriedSelfTags?: ReadonlyMap<string, readonly string[]>;
+  /** Pulls a carried section's plaintext on demand — invoked by the delta author
+   *  ONLY for a section whose recipient set changed and must be re-encrypted. */
+  readonly fetchBody?: (zone: SphereName, sectionId: string) => Promise<Section>;
   /** subject_handle / display_name — defaults from prevManifest when present. */
   readonly handle?: string;
   readonly displayName?: string;
@@ -294,16 +313,34 @@ export async function publishEthosEditionV03Owner(args: PublishV03OwnerArgs): Pr
   // it. Best-effort: a grant we can't resolve is skipped (surfaced in errors),
   // never blocking the owner's own publish.
   const grants = await fetchActiveDelegateGrants(did);
-  const { manifest, blobs } = authorBundleV03({
-    identity: browserId,
-    subjectDid: did,
-    subjectHandle: handle,
-    displayName: displayName ?? handle,
-    didJson,
-    zones,
-    delegateGrants: { circle: grants.circle, self: grants.self },
-    ...(prev ? { prev } : {}),
-  });
+  const { manifest, blobs } =
+    args.patch && prev
+      ? // DELTA: author from the patch, carrying untouched sections forward by
+        // descriptor (no plaintext) and resealing only what the grants changed.
+        await patchEditionV03Owner({
+          identity: browserId,
+          subjectDid: did,
+          subjectHandle: handle,
+          displayName: displayName ?? handle,
+          didJson,
+          delegateGrants: { circle: grants.circle, self: grants.self },
+          prev,
+          patch: args.patch,
+          ...(args.carriedSelfTags ? { carriedSelfTags: args.carriedSelfTags } : {}),
+          ...(args.fetchBody ? { fetchBody: args.fetchBody } : {}),
+        })
+      : // FULL: re-author every zone from the supplied section lists (first
+        // edition, v0.2 migration, or an explicit whole-bundle replace).
+        authorBundleV03({
+          identity: browserId,
+          subjectDid: did,
+          subjectHandle: handle,
+          displayName: displayName ?? handle,
+          didJson,
+          zones,
+          delegateGrants: { circle: grants.circle, self: grants.self },
+          ...(prev ? { prev } : {}),
+        });
 
   // Per-section blobs → the publish input shape. `blobs` is keyed by blob_sha
   // (delta upload): one entry per CHANGED/new section; carried-forward sections
