@@ -213,7 +213,7 @@ describe("v0.3 owner delta author (patchEditionV03Owner)", () => {
     }
   });
 
-  test("reseal: a grant added since the predecessor re-encrypts ONLY the covered section", async () => {
+  test("reseal: a grant re-wraps ONLY the covered section (no re-encryption)", async () => {
     const id = createBrowserIdentity("carol", "Carol");
     const subjectDid = id.did;
     const didJson = new TextEncoder().encode(JSON.stringify(signedDidDocument(id)));
@@ -264,18 +264,20 @@ describe("v0.3 owner delta author (patchEditionV03Owner)", () => {
       now: T2,
     });
 
-    assert.deepEqual(fetched, ["sec_x"], "fetchBody pulled ONLY the resealed section");
+    assert.deepEqual(fetched, [], "a pure grant re-wraps — fetchBody never called");
 
     const x1 = find(ed1.manifest as ManifestV03, "circle", "sec_x");
     const x2 = find(ed2.manifest as ManifestV03, "circle", "sec_x");
     const y1 = find(ed1.manifest as ManifestV03, "circle", "sec_y");
     const y2 = find(ed2.manifest as ManifestV03, "circle", "sec_y");
 
-    assert.notEqual(x2.blob_sha, x1.blob_sha, "covered section re-encrypted → new blob_sha");
-    assert.ok(ed2.blobs.has(x2.blob_sha!), "resealed blob present in delta");
+    assert.equal(x2.blob_sha, x1.blob_sha, "covered section re-wrapped → blob_sha unchanged");
+    assert.ok(
+      x2.cipher!.wraps.map((w) => w.recipient).includes(`agent:scoped#${pubkeyMultibase}`),
+      "delegate added to the covered section's wraps",
+    );
     assert.deepEqual(y2, y1, "uncovered section carried byte-identical");
-    assert.equal(ed2.blobs.has(y2.blob_sha!), false, "uncovered blob omitted");
-    assert.equal(ed2.blobs.size, 1, "exactly one section resealed");
+    assert.equal(ed2.blobs.size, 0, "a pure grant uploads zero blobs (re-wrap, not re-encrypt)");
 
     // The grantee can now decrypt sec_x in ed2 (and still cannot read sec_y).
     const zm = (ed2.manifest as ManifestV03).zones.circle!;
@@ -385,11 +387,17 @@ describe("v0.3 owner delta author (patchEditionV03Owner)", () => {
       now: T2,
     });
 
-    assert.deepEqual(fetched, ["sec_p"], "only the #tag=pricing section resealed");
+    assert.deepEqual(fetched, [], "a #tag= grant re-wraps — fetchBody never called");
+    const p1 = find(ed1.manifest as ManifestV03, "self", "sec_p");
     const p2 = find(ed2.manifest as ManifestV03, "self", "sec_p");
     const q1 = find(ed1.manifest as ManifestV03, "self", "sec_q");
     const q2 = find(ed2.manifest as ManifestV03, "self", "sec_q");
-    assert.ok(ed2.blobs.has(p2.blob_sha!), "tagged section resealed into the delta");
+    assert.equal(p2.blob_sha, p1.blob_sha, "tagged section re-wrapped → blob_sha unchanged");
+    assert.equal(ed2.blobs.size, 0, "zero upload (re-wrap, not re-encrypt)");
+    assert.ok(
+      p2.title_cipher!.wraps.map((w) => w.recipient).includes(`agent:tagged#${pubkeyMultibase}`),
+      "delegate added to the encrypted title's wraps",
+    );
     assert.deepEqual(q2, q1, "untagged self section carried byte-identical");
 
     const zm = (ed2.manifest as ManifestV03).zones.self!;
@@ -398,6 +406,194 @@ describe("v0.3 owner delta author (patchEditionV03Owner)", () => {
       readSection(zm, p2, blobFor(p2, ed2.blobs, ed1.blobs), subjectDid, delReader).accessible,
       true,
       "delegate reads the resealed #tag=pricing section",
+    );
+  });
+});
+
+describe("v0.3 owner delta author — cheap re-wrap on grant (no re-encryption)", () => {
+  test("granting on circle re-wraps the DEK: blob_sha unchanged, zero upload, delegate decrypts", async () => {
+    const id = createBrowserIdentity("frank", "Frank");
+    const subjectDid = id.did;
+    const didJson = new TextEncoder().encode(JSON.stringify(signedDidDocument(id)));
+
+    const ed1 = authorBundleV03({
+      identity: id,
+      subjectDid,
+      subjectHandle: "frank",
+      displayName: "Frank",
+      didJson,
+      zones: { circle: [sec("sec_x", "X", "x-body")] },
+      now: T1,
+    });
+    const prev = { manifest: ed1.manifest, getBlob: (f: string) => ed1.blobs.get(f)! };
+    const x1 = find(ed1.manifest as ManifestV03, "circle", "sec_x");
+
+    const agent = generateKeyPair();
+    const pub = ed25519PublicKeyToMultibase(agent.publicKey);
+    const grant: DelegateReadGrant = {
+      recipient: { didUrl: `agent:reader#${pub}`, x25519PublicKey: edPubToX25519Pub(agent.publicKey) },
+      scopes: ["ethos.read.circle#id=sec_x"],
+    };
+    // The re-wrap must NOT need the plaintext.
+    const fetchBody = async (): Promise<Section> => {
+      throw new Error("re-wrap must not call fetchBody");
+    };
+
+    const ed2 = await patchEditionV03Owner({
+      identity: id,
+      subjectDid,
+      subjectHandle: "frank",
+      displayName: "Frank",
+      didJson,
+      delegateGrants: { circle: [grant] },
+      prev,
+      patch: {},
+      fetchBody,
+      now: T2,
+    });
+
+    const x2 = find(ed2.manifest as ManifestV03, "circle", "sec_x");
+    assert.equal(x2.blob_sha, x1.blob_sha, "body untouched → same blob_sha");
+    assert.equal(ed2.blobs.size, 0, "a pure grant uploads zero blobs");
+    const recips = x2.cipher!.wraps.map((w) => w.recipient);
+    assert.ok(recips.includes(`${subjectDid}#circle-kex`), "subject still wrapped");
+    assert.ok(recips.includes(`agent:reader#${pub}`), "delegate now wrapped");
+
+    // Delegate decrypts the carried-forward body; owner still can too.
+    const zm = (ed2.manifest as ManifestV03).zones.circle!;
+    const delReader = delegateSectionReader("agent:reader", pub, agent.seed);
+    const r = readSection(zm, x2, blobFor(x2, ed2.blobs, ed1.blobs), subjectDid, delReader);
+    assert.ok(r.accessible && r.section, "delegate opens the re-wrapped section");
+    assert.equal(r.section!.body, "x-body");
+    const ownerReader = ownerSectionReader(subjectDid, "circle", id.circle.seed);
+    assert.equal(
+      readSection(zm, x2, blobFor(x2, ed2.blobs, ed1.blobs), subjectDid, ownerReader).accessible,
+      true,
+      "owner still reads it",
+    );
+  });
+
+  test("granting on self re-wraps the encrypted title too (delegate gets title + body), blob unchanged", async () => {
+    const id = createBrowserIdentity("gina", "Gina");
+    const subjectDid = id.did;
+    const didJson = new TextEncoder().encode(JSON.stringify(signedDidDocument(id)));
+
+    const ed1 = authorBundleV03({
+      identity: id,
+      subjectDid,
+      subjectHandle: "gina",
+      displayName: "Gina",
+      didJson,
+      zones: { self: [sec("sec_p", "P", "priced", ["pricing"])] },
+      now: T1,
+    });
+    const prev = { manifest: ed1.manifest, getBlob: (f: string) => ed1.blobs.get(f)! };
+    const p1 = find(ed1.manifest as ManifestV03, "self", "sec_p");
+
+    const agent = generateKeyPair();
+    const pub = ed25519PublicKeyToMultibase(agent.publicKey);
+    const grant: DelegateReadGrant = {
+      recipient: { didUrl: `agent:tagged#${pub}`, x25519PublicKey: edPubToX25519Pub(agent.publicKey) },
+      scopes: ["ethos.read.self#tag=pricing"],
+    };
+    const fetchBody = async (): Promise<Section> => {
+      throw new Error("re-wrap must not call fetchBody");
+    };
+
+    const ed2 = await patchEditionV03Owner({
+      identity: id,
+      subjectDid,
+      subjectHandle: "gina",
+      displayName: "Gina",
+      didJson,
+      delegateGrants: { self: [grant] },
+      prev,
+      patch: {},
+      carriedSelfTags: new Map([["sec_p", ["pricing"]]]),
+      fetchBody,
+      now: T2,
+    });
+
+    const p2 = find(ed2.manifest as ManifestV03, "self", "sec_p");
+    assert.equal(p2.blob_sha, p1.blob_sha, "self body untouched → same blob_sha");
+    assert.equal(ed2.blobs.size, 0, "zero upload");
+    assert.ok(
+      p2.title_cipher!.wraps.map((w) => w.recipient).includes(`agent:tagged#${pub}`),
+      "delegate added to the encrypted title's wraps",
+    );
+
+    const zm = (ed2.manifest as ManifestV03).zones.self!;
+    const delReader = delegateSectionReader("agent:tagged", pub, agent.seed);
+    const r = readSection(zm, p2, blobFor(p2, ed2.blobs, ed1.blobs), subjectDid, delReader);
+    assert.ok(r.accessible && r.section, "delegate opens the re-wrapped self section");
+    assert.equal(r.section!.title, "P", "title recovered from re-wrapped title_cipher");
+    assert.equal(r.section!.body, "priced");
+    assert.deepEqual(r.section!.tags, ["pricing"]);
+  });
+
+  test("revoking a delegate rotates the DEK (re-encrypt, new blob_sha, old key locked out)", async () => {
+    const id = createBrowserIdentity("hank", "Hank");
+    const subjectDid = id.did;
+    const didJson = new TextEncoder().encode(JSON.stringify(signedDidDocument(id)));
+
+    const agent = generateKeyPair();
+    const pub = ed25519PublicKeyToMultibase(agent.publicKey);
+    const grant: DelegateReadGrant = {
+      recipient: { didUrl: `agent:reader#${pub}`, x25519PublicKey: edPubToX25519Pub(agent.publicKey) },
+      scopes: ["ethos.read.circle#id=sec_x"],
+    };
+
+    // ed1 already sealed to owner + delegate.
+    const ed1 = authorBundleV03({
+      identity: id,
+      subjectDid,
+      subjectHandle: "hank",
+      displayName: "Hank",
+      didJson,
+      zones: { circle: [sec("sec_x", "X", "x-body")] },
+      delegateGrants: { circle: [grant] },
+      now: T1,
+    });
+    const x1 = find(ed1.manifest as ManifestV03, "circle", "sec_x");
+    assert.ok(
+      x1.cipher!.wraps.map((w) => w.recipient).includes(`agent:reader#${pub}`),
+      "delegate sealed in ed1",
+    );
+    const prev = { manifest: ed1.manifest, getBlob: (f: string) => ed1.blobs.get(f)! };
+
+    // ed2: grants now empty (revoked) → recipients shrink → must re-encrypt.
+    const fetched: string[] = [];
+    const fetchBody = async (_z: "public" | "circle" | "self", sid: string): Promise<Section> => {
+      fetched.push(sid);
+      return sec("sec_x", "X", "x-body");
+    };
+    const ed2 = await patchEditionV03Owner({
+      identity: id,
+      subjectDid,
+      subjectHandle: "hank",
+      displayName: "Hank",
+      didJson,
+      delegateGrants: { circle: [] },
+      prev,
+      patch: {},
+      fetchBody,
+      now: T2,
+    });
+
+    const x2 = find(ed2.manifest as ManifestV03, "circle", "sec_x");
+    assert.deepEqual(fetched, ["sec_x"], "revocation re-encrypts (fetched the body)");
+    assert.notEqual(x2.blob_sha, x1.blob_sha, "DEK rotated → new blob_sha");
+    assert.ok(ed2.blobs.has(x2.blob_sha!), "re-encrypted blob uploaded");
+    assert.ok(
+      !x2.cipher!.wraps.map((w) => w.recipient).includes(`agent:reader#${pub}`),
+      "revoked delegate dropped from wraps",
+    );
+    const zm = (ed2.manifest as ManifestV03).zones.circle!;
+    const delReader = delegateSectionReader("agent:reader", pub, agent.seed);
+    assert.equal(
+      readSection(zm, x2, blobFor(x2, ed2.blobs, ed1.blobs), subjectDid, delReader).accessible,
+      false,
+      "revoked delegate cannot read the rotated section",
     );
   });
 });

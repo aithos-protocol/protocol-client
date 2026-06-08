@@ -22,6 +22,7 @@ import { canonicalize } from "./canonical.js";
 import { sign } from "./ed25519.js";
 import { edSeedToX25519Secret } from "./kex.js";
 import { wrapDek } from "./encrypt.js";
+import { unwrapDek, type WrapEntry } from "./decrypt.js";
 import { sphereDidUrl, type BrowserIdentity } from "./identity.js";
 import type { Section } from "./manifest.js";
 import { coversRead } from "./ethos-scope.js";
@@ -309,6 +310,60 @@ function recipientLabelsEqual(cipher: SectionCipher | undefined, recipients: rea
   if (a.size !== recipients.length) return false;
   for (const r of recipients) if (!a.has(r.didUrl)) return false;
   return true;
+}
+
+/**
+ * Cheap reseal — ADD recipients to a section WITHOUT re-encrypting its body.
+ * Recovers the section's DEK by unwrapping the subject's own wrap, then re-wraps
+ * that same DEK to the full new recipient set. The body ciphertext (the blob) is
+ * untouched, so `blob_sha` is unchanged and the blob carries forward with ZERO
+ * upload; only the descriptor's `cipher.wraps` (and, for `self`, the encrypted
+ * index's `title_cipher.wraps`) change. This is what makes granting a delegate
+ * read access to existing sections O(1) bytes instead of a full re-encryption.
+ *
+ * Returns null — so the caller falls back to a full re-encrypt — when the body
+ * isn't content-addressed yet (legacy, no `blob_sha`) or the subject's own wrap
+ * can't be recovered. Use ONLY when recipients GREW (a grant); a removal
+ * (revocation) must rotate the DEK, which this does not do.
+ */
+function rewrapSectionGrant(
+  prevDesc: SectionDescriptor,
+  recipients: readonly SectionRecipient[],
+  identity: BrowserIdentity,
+  subjectDid: string,
+  zone: "circle" | "self",
+): SectionDescriptor | null {
+  if (!prevDesc.blob_sha || !prevDesc.cipher) return null;
+  const ownerDidUrl = `${subjectDid}#${zone}-kex`;
+  const ownerSk = edSeedToX25519Secret(identity[zone].seed);
+  try {
+    const reWrap = (wraps: readonly WrapEntry[]): WrapEntry[] | null => {
+      const ownerWrap = wraps.find((w) => w.recipient === ownerDidUrl);
+      if (!ownerWrap) return null;
+      let dek: Uint8Array;
+      try {
+        dek = unwrapDek(ownerWrap, ownerSk);
+      } catch {
+        return null; // subject wrap present but undecryptable → re-encrypt
+      }
+      try {
+        return recipients.map((r) => wrapDek(dek, r.didUrl, r.x25519PublicKey));
+      } finally {
+        dek.fill(0);
+      }
+    };
+    const bodyWraps = reWrap(prevDesc.cipher.wraps);
+    if (!bodyWraps) return null;
+    const out: SectionDescriptor = { ...prevDesc, cipher: { ...prevDesc.cipher, wraps: bodyWraps } };
+    if (prevDesc.title_cipher) {
+      const titleWraps = reWrap(prevDesc.title_cipher.wraps);
+      if (!titleWraps) return null;
+      (out as { title_cipher?: TitleCipher }).title_cipher = { ...prevDesc.title_cipher, wraps: titleWraps };
+    }
+    return out;
+  } finally {
+    ownerSk.fill(0);
+  }
 }
 
 /**
@@ -707,14 +762,34 @@ export async function patchEditionV03Owner(args: OwnerPatchArgs): Promise<Author
       const recipients = recipientsFor(d.section_id, tags);
       if (recipientLabelsEqual(d.cipher, recipients)) {
         descriptors.push(carryForwardSection(d, args.prev.getBlob, blobs));
-      } else {
-        if (!args.fetchBody) {
-          throw new Error(
-            `patchEditionV03Owner: section ${d.section_id} (${zone}) needs a reseal but no fetchBody was provided`,
-          );
-        }
-        writeFresh(await args.fetchBody(zone, d.section_id));
+        continue;
       }
+      // Recipients changed. A GRANT (no recipient removed) re-wraps the existing
+      // DEK to the new set — body ciphertext / blob_sha unchanged, blob carried
+      // forward with zero upload. A removal (revocation) must rotate the DEK, so
+      // it falls through to a full re-encrypt.
+      const prevLabels = new Set((d.cipher?.wraps ?? []).map((w) => w.recipient));
+      const grantOnly = [...prevLabels].every((l) => recipients.some((r) => r.didUrl === l));
+      if (grantOnly) {
+        const rewrapped = rewrapSectionGrant(
+          d,
+          recipients,
+          args.identity,
+          args.subjectDid,
+          zone as "circle" | "self",
+        );
+        if (rewrapped) {
+          descriptors.push(rewrapped); // blob_sha unchanged → body carried forward
+          continue;
+        }
+      }
+      // Revocation, legacy (no blob_sha), or DEK recovery failed → re-encrypt.
+      if (!args.fetchBody) {
+        throw new Error(
+          `patchEditionV03Owner: section ${d.section_id} (${zone}) needs a reseal but no fetchBody was provided`,
+        );
+      }
+      writeFresh(await args.fetchBody(zone, d.section_id));
     }
 
     // New sections (upserts with no predecessor), in patch input order.
