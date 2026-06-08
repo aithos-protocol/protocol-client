@@ -91,6 +91,87 @@ export interface DelegateReaderArgs {
   readonly seed: Uint8Array;
 }
 
+/** The section reader for a zone: `public` → none (plaintext); `circle`/`self`
+ *  → the owner's sphere reader (every section) or the delegate's reader (only
+ *  the sections sealed to it). Shared by the index, section, and full loaders. */
+function sectionReaderForZone(
+  zone: SphereName,
+  subjectDid: string,
+  owner: StoredIdentity | undefined,
+  delegate: DelegateReaderArgs | undefined,
+): Parameters<typeof readSection>[4] {
+  if (zone === "public") return undefined;
+  if (owner) return ownerSectionReader(subjectDid, zone, hexToBytes(owner.seeds[zone]));
+  if (delegate) return delegateSectionReader(delegate.granteeId, delegate.pubkeyMultibase, delegate.seed);
+  return undefined;
+}
+
+/** Fetch the v0.3 manifest, throwing the legacy-v0.2 signal when the subject's
+ *  current edition isn't v0.3 (same error {@link loadEthosV03} raises). */
+async function fetchManifestV03(did: string): Promise<ManifestV03> {
+  const signed = await readRpc<{ object: ManifestV03 }>("aithos.get_ethos_manifest", { did });
+  const manifest = signed.object;
+  if (!isV03Manifest(manifest)) {
+    const ver = (manifest as { aithos?: string }).aithos;
+    throw new EditV03Error("manifest", `subject ${did} is not on a v0.3 edition (aithos=${ver})`, {
+      legacy: true,
+      aithos: ver,
+    });
+  }
+  return manifest;
+}
+
+/**
+ * Load ONLY the manifest + per-zone index (section titles + capability flags) —
+ * the lightweight half of {@link loadEthosV03}. NO section bodies are fetched or
+ * decrypted, so the cost is one network round-trip regardless of how many
+ * sections the zones hold. Pair with {@link loadSectionV03} to read bodies on
+ * demand (the point of content-addressing: never load everything up front).
+ */
+export async function loadEthosIndexV03(
+  did: string,
+  identity?: StoredIdentity,
+  delegate?: DelegateReaderArgs,
+): Promise<{ manifest: ManifestV03; index: Record<SphereName, IndexRow[]> }> {
+  const manifest = await fetchManifestV03(did);
+  const subjectDid = manifest.subject_did;
+  const owner = identity && identity.did === did ? identity : undefined;
+  const index = {} as Record<SphereName, IndexRow[]>;
+  for (const zone of SPHERES) {
+    const zm = manifest.zones[zone];
+    index[zone] = zm
+      ? readZoneIndex(zm, subjectDid, sectionReaderForZone(zone, subjectDid, owner, delegate))
+      : [];
+  }
+  return { manifest, index };
+}
+
+/**
+ * Read + decrypt ONE section on demand, using a manifest already obtained from
+ * {@link loadEthosIndexV03} (so no manifest refetch). Returns `null` when the
+ * section is absent from the manifest or this reader can't decrypt it (`public`
+ * is always returned). One `get_ethos_section` round-trip; the server resolves
+ * the descriptor's `blob_sha` to the deduplicated blob.
+ */
+export async function loadSectionV03(
+  manifest: ManifestV03,
+  zone: SphereName,
+  sectionId: string,
+  identity?: StoredIdentity,
+  delegate?: DelegateReaderArgs,
+): Promise<Section | null> {
+  const zm = manifest.zones[zone];
+  const desc = zm?.sections.find((s) => s.section_id === sectionId);
+  if (!zm || !desc) return null;
+  const subjectDid = manifest.subject_did;
+  const owner = identity && identity.did === subjectDid ? identity : undefined;
+  const reader = sectionReaderForZone(zone, subjectDid, owner, delegate);
+  if (zone !== "public" && !reader) return null;
+  const blob = await fetchSectionBlob(subjectDid, sectionId);
+  const res = readSection(zm, desc, blob, subjectDid, reader);
+  return res.accessible && res.section ? res.section : null;
+}
+
 /**
  * Load a v0.3 ethos: the manifest + per-zone index, and the decrypted sections
  * for whoever can read them — the OWNER (`identity`, reads every encrypted zone
@@ -101,54 +182,24 @@ export interface DelegateReaderArgs {
  * non-decryptable sections are silently skipped, so a zone with descriptors but
  * an empty `sections[zone]` means "present but not readable for this reader".
  * Throws if the subject's edition is not v0.3.
+ *
+ * Eager: fetches+decrypts every readable section. For a lazy UI, prefer
+ * {@link loadEthosIndexV03} + {@link loadSectionV03}.
  */
 export async function loadEthosV03(
   did: string,
   identity?: StoredIdentity,
   delegate?: DelegateReaderArgs,
 ): Promise<EthosV03Snapshot> {
-  const signed = await readRpc<{ object: ManifestV03 }>("aithos.get_ethos_manifest", { did });
-  const manifest = signed.object;
-  if (!isV03Manifest(manifest)) {
-    const ver = (manifest as { aithos?: string }).aithos;
-    throw new EditV03Error(
-      "manifest",
-      `subject ${did} is not on a v0.3 edition (aithos=${ver})`,
-      { legacy: true, aithos: ver },
-    );
-  }
+  const { manifest, index } = await loadEthosIndexV03(did, identity, delegate);
   const subjectDid = manifest.subject_did;
   const owner = identity && identity.did === did ? identity : undefined;
-
-  const index = {} as Record<SphereName, IndexRow[]>;
-  // Decrypted sections are built for every caller: public is plaintext (anyone),
-  // circle/self need a reader (owner = all sections, delegate = only its sealed
-  // ones, anonymous = none).
   const sections = {} as Record<SphereName, Section[]>;
-
   for (const zone of SPHERES) {
     const zm = manifest.zones[zone];
-    if (!zm) {
-      index[zone] = [];
-      sections[zone] = [];
-      continue;
-    }
-    // Public is plaintext (no reader). For circle/self pick the owner reader
-    // (every section) or the delegate reader (only its sealed sections).
-    const reader =
-      zone === "public"
-        ? undefined
-        : owner
-          ? ownerSectionReader(subjectDid, zone, hexToBytes(owner.seeds[zone]))
-          : delegate
-            ? delegateSectionReader(delegate.granteeId, delegate.pubkeyMultibase, delegate.seed)
-            : undefined;
-    index[zone] = readZoneIndex(zm, subjectDid, reader);
-
-    // Only fetch+decrypt blobs we have a chance of reading: public is always
-    // plaintext; circle/self need a reader (anonymous skips them entirely).
+    const reader = zm ? sectionReaderForZone(zone, subjectDid, owner, delegate) : undefined;
     const list: Section[] = [];
-    if (zone === "public" || reader) {
+    if (zm && (zone === "public" || reader)) {
       for (const desc of zm.sections) {
         const blob = await fetchSectionBlob(did, desc.section_id);
         const res = readSection(zm, desc, blob, subjectDid, reader);
@@ -157,7 +208,6 @@ export async function loadEthosV03(
     }
     sections[zone] = list;
   }
-
   return { manifest, index, sections };
 }
 
