@@ -8,23 +8,26 @@
 // v0.3 edition locally (authorBundleV03), then POST publish_ethos_edition with
 // the per-section blobs inside a signed §11 envelope.
 //
-// Scope: OWNER authoring (the app's own ethos). Carry-forward reuses the prior
-// edition's blobs byte-identical, so only changed sections are re-encrypted; the
-// prior blobs are pre-fetched (authorBundleV03 takes a synchronous getBlob).
+// Scope: OWNER + DELEGATE authoring. Carry-forward reuses the prior edition's
+// blobs byte-identical, so only changed sections are re-encrypted; the prior
+// blobs are pre-fetched (the author fns take a synchronous getBlob).
 //
-// Delegate authoring exists at the crypto layer (patchEditionV03Delegate) and is
-// wired through the editor in a follow-up.
+// Delegate authoring (publishEthosEditionV03Delegate) patches only the
+// delegate's actor sphere via patchEditionV03Delegate and signs the §11 envelope
+// with the delegate key + mandate (bare-multibase verificationMethod).
 
 import type { StoredIdentity } from "./storage-types.js";
 import { browserIdentityFromStored } from "./crypto/identity.js";
 import type { DidDocument } from "./crypto/identity.js";
 import type { Section } from "./crypto/manifest.js";
 import { buildSignedEnvelope } from "./crypto/envelope.js";
+import type { SignedMandate } from "./crypto/mandate.js";
 import { readRpc } from "./api.js";
 import { writeEndpoint } from "./endpoints.js";
 import { sha256 } from "@noble/hashes/sha2";
-import { bytesToHex } from "./crypto/encoding.js";
+import { bytesToHex, multibaseToEd25519PublicKey } from "./crypto/encoding.js";
 import {
+  delegateSectionReader,
   isV03Manifest,
   ownerSectionReader,
   readSection,
@@ -33,7 +36,12 @@ import {
   type ManifestV03,
   type SphereName,
 } from "./crypto/bundle-v03.js";
-import { authorBundleV03 } from "./crypto/bundle-v03-write.js";
+import {
+  authorBundleV03,
+  ownerZoneKexPubkey,
+  patchEditionV03Delegate,
+  type DelegateAuthorV03,
+} from "./crypto/bundle-v03-write.js";
 import { fetchActiveDelegateGrants } from "./delegate-recipients.js";
 
 export class EditV03Error extends Error {
@@ -57,7 +65,9 @@ export interface EthosV03Snapshot {
   readonly manifest: ManifestV03;
   /** Section index per zone (id + title; self titles need the owner key). */
   readonly index: Record<SphereName, IndexRow[]>;
-  /** Decrypted sections per zone (only when the owner identity is supplied). */
+  /** Decrypted sections per zone, for whatever this reader can open (public is
+   *  always present; circle/self only for owner/recipient delegate). Always set
+   *  by {@link loadEthosV03}; a zone may be an empty array when unreadable. */
   readonly sections?: Record<SphereName, Section[]>;
 }
 
@@ -70,12 +80,33 @@ async function fetchSectionBlob(did: string, sectionId: string): Promise<Uint8Ar
   return bytesFromBase64(signed.object.bytes_base64);
 }
 
+/** A delegate reader's key material — decrypts only the sections (and index
+ *  titles) it is a recipient of. The owner path takes `identity` instead. */
+export interface DelegateReaderArgs {
+  /** Grantee id from the mandate (e.g. `agent:gmail`). */
+  readonly granteeId: string;
+  /** The delegate's Ed25519 public key, multibase — the wrap recipient suffix. */
+  readonly pubkeyMultibase: string;
+  /** The delegate's Ed25519 seed (32 bytes). */
+  readonly seed: Uint8Array;
+}
+
 /**
- * Load a v0.3 ethos: the manifest + per-zone index, and — when the owner
- * identity is supplied — the decrypted sections (fetched per-section, then
- * decrypted locally). Throws if the subject's current edition is not v0.3.
+ * Load a v0.3 ethos: the manifest + per-zone index, and the decrypted sections
+ * for whoever can read them — the OWNER (`identity`, reads every encrypted zone
+ * with the sphere seeds) or a DELEGATE (`delegate`, reads only the sections
+ * sealed to its key per §3.5.7′). Pass neither for an anonymous read — `public`
+ * sections (plaintext) are still returned; `circle`/`self` come back empty with
+ * their titles hidden. Sections are fetched per-section and decrypted locally;
+ * non-decryptable sections are silently skipped, so a zone with descriptors but
+ * an empty `sections[zone]` means "present but not readable for this reader".
+ * Throws if the subject's edition is not v0.3.
  */
-export async function loadEthosV03(did: string, identity?: StoredIdentity): Promise<EthosV03Snapshot> {
+export async function loadEthosV03(
+  did: string,
+  identity?: StoredIdentity,
+  delegate?: DelegateReaderArgs,
+): Promise<EthosV03Snapshot> {
   const signed = await readRpc<{ object: ManifestV03 }>("aithos.get_ethos_manifest", { did });
   const manifest = signed.object;
   if (!isV03Manifest(manifest)) {
@@ -85,33 +116,44 @@ export async function loadEthosV03(did: string, identity?: StoredIdentity): Prom
   const owner = identity && identity.did === did ? identity : undefined;
 
   const index = {} as Record<SphereName, IndexRow[]>;
-  const sections = owner ? ({} as Record<SphereName, Section[]>) : undefined;
+  // Decrypted sections are built for every caller: public is plaintext (anyone),
+  // circle/self need a reader (owner = all sections, delegate = only its sealed
+  // ones, anonymous = none).
+  const sections = {} as Record<SphereName, Section[]>;
 
   for (const zone of SPHERES) {
     const zm = manifest.zones[zone];
     if (!zm) {
       index[zone] = [];
-      if (sections) sections[zone] = [];
+      sections[zone] = [];
       continue;
     }
+    // Public is plaintext (no reader). For circle/self pick the owner reader
+    // (every section) or the delegate reader (only its sealed sections).
     const reader =
-      zone !== "public" && owner
-        ? ownerSectionReader(subjectDid, zone, hexToBytes(owner.seeds[zone]))
-        : undefined;
+      zone === "public"
+        ? undefined
+        : owner
+          ? ownerSectionReader(subjectDid, zone, hexToBytes(owner.seeds[zone]))
+          : delegate
+            ? delegateSectionReader(delegate.granteeId, delegate.pubkeyMultibase, delegate.seed)
+            : undefined;
     index[zone] = readZoneIndex(zm, subjectDid, reader);
 
-    if (sections) {
-      const list: Section[] = [];
+    // Only fetch+decrypt blobs we have a chance of reading: public is always
+    // plaintext; circle/self need a reader (anonymous skips them entirely).
+    const list: Section[] = [];
+    if (zone === "public" || reader) {
       for (const desc of zm.sections) {
         const blob = await fetchSectionBlob(did, desc.section_id);
         const res = readSection(zm, desc, blob, subjectDid, reader);
         if (res.accessible && res.section) list.push(res.section);
       }
-      sections[zone] = list;
     }
+    sections[zone] = list;
   }
 
-  return { manifest, index, ...(sections ? { sections } : {}) };
+  return { manifest, index, sections };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -211,6 +253,121 @@ export async function publishEthosEditionV03Owner(args: PublishV03OwnerArgs): Pr
     verificationMethod: `${did}#public`,
     params,
     signer: browserId.public,
+  });
+
+  const res = await fetch(writeEndpoint(), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: "aithos.publish_ethos_edition",
+      method: "aithos.publish_ethos_edition",
+      params: { ...params, _envelope: envelope },
+    }),
+  });
+  const body = (await res.json()) as {
+    result?: unknown;
+    error?: { code: number; message: string; data?: Record<string, unknown> };
+  };
+  if (body.error) {
+    throw new EditV03Error("publish_ethos_edition", body.error.message, {
+      code: body.error.code,
+      ...body.error.data,
+    });
+  }
+
+  return { manifest };
+}
+
+/* -------------------------------------------------------------------------- */
+/*  Publish (delegate, section-scoped)                                        */
+/* -------------------------------------------------------------------------- */
+
+export interface PublishV03DelegateArgs {
+  /** The delegate authoring this edition (agent key + mandate id + actor sphere). */
+  readonly delegate: DelegateAuthorV03;
+  /** The full signed mandate authorising the write — attached to the §11 envelope. */
+  readonly mandate: SignedMandate;
+  /** Predecessor edition: a delegate always patches an existing v0.3 edition. */
+  readonly prevManifest: ManifestV03;
+  /** Changes to the delegate's actor sphere (upserts provide full sections). */
+  readonly patch: { readonly upserts?: readonly Section[]; readonly deletes?: readonly string[] };
+}
+
+/**
+ * Author + publish a new v0.3 edition AS A DELEGATE. Mirrors
+ * {@link publishEthosEditionV03Owner}, but: (1) patches ONLY the delegate's
+ * `actorSphere` and carries every other zone forward verbatim (the delegate
+ * isn't entitled to read them), and (2) signs the §11 envelope with the delegate
+ * key + mandate (bare-multibase `verificationMethod`) instead of an owner sphere.
+ *
+ * Subject identity (did/handle/display name) comes from `prevManifest` — a
+ * delegate never mints a first edition.
+ */
+export async function publishEthosEditionV03Delegate(
+  args: PublishV03DelegateArgs,
+): Promise<PublishV03Result> {
+  const { delegate, prevManifest } = args;
+  if (!isV03Manifest(prevManifest)) {
+    throw new EditV03Error("manifest", "v0.3 predecessor required for delegate authoring");
+  }
+  const did = prevManifest.subject_did;
+  const handle = prevManifest.subject_handle;
+  const displayName = prevManifest.display_name ?? handle;
+
+  // did.json (exact server byte-shape) anchors the manifest; the DID document
+  // also yields the subject's `#${zone}-kex` pubkey the delegate seals into.
+  const idResp = await readRpc<{ object: DidDocument }>("aithos.get_identity", { did });
+  const didDoc = idResp.object;
+  const didJson = new TextEncoder().encode(JSON.stringify(didDoc, null, 2) + "\n");
+  const ownerZonePubkey = ownerZoneKexPubkey(didDoc, did, delegate.actorSphere);
+
+  // Carry-forward: patchEditionV03Delegate copies every zone the delegate can't
+  // read VERBATIM, so it needs all prior blobs pre-fetched (sync getBlob).
+  const blobMap = new Map<string, Uint8Array>();
+  for (const zone of SPHERES) {
+    for (const desc of prevManifest.zones[zone]?.sections ?? []) {
+      blobMap.set(desc.file, await fetchSectionBlob(did, desc.section_id));
+    }
+  }
+
+  const { manifest, blobs } = patchEditionV03Delegate({
+    delegate,
+    subjectDid: did,
+    subjectHandle: handle,
+    displayName: displayName ?? handle,
+    didJson,
+    ownerZonePubkey,
+    prev: {
+      manifest: prevManifest,
+      getBlob: (file) => {
+        const b = blobMap.get(file);
+        if (!b) throw new EditV03Error("carry-forward", `prior blob not pre-fetched: ${file}`);
+        return b;
+      },
+    },
+    patch: args.patch,
+  });
+
+  // Per-section blobs → the publish input shape.
+  const blobsParam: Record<string, { bytes_base64: string }> = {};
+  for (const [file, bytes] of blobs) {
+    blobsParam[file] = { bytes_base64: bytesToBase64(bytes) };
+  }
+
+  const params = { manifest, blobs: blobsParam };
+  const envelope = buildSignedEnvelope({
+    iss: did,
+    aud: writeEndpoint(),
+    method: "aithos.publish_ethos_edition",
+    // Bare multibase verificationMethod + attached mandate = the delegate path.
+    verificationMethod: delegate.pubkeyMultibase,
+    signer: {
+      seed: delegate.seed,
+      publicKey: multibaseToEd25519PublicKey(delegate.pubkeyMultibase),
+    },
+    mandate: args.mandate,
+    params,
   });
 
   const res = await fetch(writeEndpoint(), {

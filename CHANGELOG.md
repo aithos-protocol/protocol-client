@@ -5,6 +5,19 @@ All notable changes to `@aithos/protocol-client` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this package adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-alpha.22] — 2026-06-08
+
+### Added
+
+- **Delegate authoring wired through the v0.3 editor.**
+  `publishEthosEditionV03Delegate` (`editor-v03.ts`) mirrors the owner publish
+  but patches ONLY the delegate's `actorSphere` via `patchEditionV03Delegate`
+  (carrying every other zone forward verbatim) and signs the §11 envelope with
+  the delegate key + mandate (bare-multibase `verificationMethod`). Subject
+  identity (did/handle/display name) comes from the predecessor manifest — a
+  delegate never mints a first edition. Completes the per-section delegate write
+  path the SDK `EthosClient` rides on (#52).
+
 ## [0.1.0-alpha.21] — 2026-06-07
 
 ### Added
