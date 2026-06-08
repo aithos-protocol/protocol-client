@@ -343,7 +343,7 @@ export function authorBundleV03(args: AuthorV03Args): AuthoredV03 {
 
       const plaintext = renderSectionMarkdown(section);
       const sha = sha256hex(plaintext);
-      const prevDesc = prevZone?.sections.find((s) => s.section_id === section.id);
+      const prevDesc = prevZone?.sections?.find((s) => s.section_id === section.id);
       // Carry-forward compares THIS section's recipient set, so granting or
       // revoking a section-scoped delegate re-encrypts only the sections whose
       // recipients actually changed (§3.5.6′).

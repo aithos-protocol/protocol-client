@@ -210,8 +210,15 @@ export async function publishEthosEditionV03Owner(args: PublishV03OwnerArgs): Pr
 
   // Carry-forward needs the prior blobs (authorBundleV03 takes a SYNC getBlob),
   // so pre-fetch every prior section blob into a map first.
+  //
+  // Accept ANY prevManifest, not just v0.3: a v0.2 (monolithic) manifest is a
+  // valid predecessor for the owner migration (§1) — it carries bundle_id and
+  // edition.height, so the new edition links at height+1 with the correct
+  // prev_hash. Its v1 zones have no per-section `.sections`, so `?.sections ?? []`
+  // yields an empty prefetch (nothing to carry forward → every section is
+  // re-encrypted fresh, which is exactly what a migration wants).
   let prev: { manifest: ManifestV03; getBlob: (file: string) => Uint8Array } | undefined;
-  if (args.prevManifest && isV03Manifest(args.prevManifest)) {
+  if (args.prevManifest) {
     const blobMap = new Map<string, Uint8Array>();
     for (const zone of SPHERES) {
       for (const desc of args.prevManifest.zones[zone]?.sections ?? []) {
