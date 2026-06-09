@@ -159,6 +159,59 @@ export function signMandate(args: SignMandateArgs): SignedMandate {
   } as SignedMandate;
 }
 
+/** A §4.3 signed Revocation — references the mandate being revoked. */
+export interface Revocation {
+  readonly "aithos-revocation": "0.1.0";
+  readonly mandate_id: string;
+  readonly issuer: string;
+  readonly issued_by_key: string;
+  readonly revoked_at: string;
+  readonly reason: string;
+  readonly signature: {
+    readonly alg: "ed25519";
+    readonly key: string;
+    readonly value: string;
+  };
+}
+
+export interface SignRevocationArgs {
+  readonly issuer: BrowserIdentity;
+  /** The mandate being revoked — its `issuer` + `issued_by_key` drive the signature. */
+  readonly mandate: Pick<SignedMandate, "id" | "issuer" | "issued_by_key">;
+  /** Free-text reason; signed into the document (defaults to ""). */
+  readonly reason?: string;
+  readonly revokedAt?: Date;
+}
+
+/**
+ * Build + sign a §4.3 Revocation — browser-safe mirror of protocol-core's
+ * `createRevocation`. The signature MUST come from the SAME sphere key that
+ * issued the mandate (`mandate.issued_by_key`), so the server resolves it in the
+ * subject's DID document and `verifyRevocation` accepts it. `mandate_kind` is
+ * omitted for the default `"action"` case (matching the reference), so the
+ * canonical form is byte-identical.
+ */
+export function signRevocation(args: SignRevocationArgs): Revocation {
+  const issuedBy = args.mandate.issued_by_key;
+  const m = issuedBy.match(/#(public|circle|self)$/);
+  if (!m) throw new Error(`cannot determine sphere from issued_by_key: ${issuedBy}`);
+  const sphere = m[1] as Sphere;
+  const unsigned = {
+    "aithos-revocation": "0.1.0" as const,
+    mandate_id: args.mandate.id,
+    issuer: args.mandate.issuer,
+    issued_by_key: issuedBy,
+    revoked_at: (args.revokedAt ?? new Date()).toISOString(),
+    reason: args.reason ?? "",
+    signature: { alg: "ed25519" as const, key: issuedBy, value: "" },
+  };
+  const sigBytes = sign(
+    new TextEncoder().encode(canonicalize(unsigned)),
+    args.issuer[sphere].seed,
+  );
+  return { ...unsigned, signature: { ...unsigned.signature, value: base64url(sigBytes) } };
+}
+
 /**
  * Validate the scope → actor_sphere relationship. Mirrors protocol-core's
  * `validateScopesAgainstSphere` byte-for-byte so we fail client-side with
