@@ -43,7 +43,13 @@ import {
   patchEditionV03Owner,
   type DelegateAuthorV03,
 } from "./crypto/bundle-v03-write.js";
-import { fetchActiveDelegateGrants } from "./delegate-recipients.js";
+import {
+  fetchActiveDelegateGrants,
+  mandateToGrant,
+  type DelegateGrantWithScopes,
+} from "./delegate-recipients.js";
+import { DEFAULT_RPC_CONCURRENCY, mapLimit } from "./concurrency.js";
+import { cachedIdentityDoc } from "./perf-cache.js";
 
 export class EditV03Error extends Error {
   readonly step: string;
@@ -177,6 +183,66 @@ function sectionReaderForZone(
   return undefined;
 }
 
+/** Fetch the subject's did.json (`get_identity`). Memoized through the opt-in
+ *  perf cache (TTL configured by the host; passthrough by default) — the doc
+ *  changes only on key rotation / sphere augmentation, yet every publish needs
+ *  its exact byte-shape to anchor `sha256_of_did_json`. */
+function fetchIdentityDocV03(did: string): Promise<DidDocument> {
+  return cachedIdentityDoc(did, async () => {
+    const idResp = await readRpc<{ object: DidDocument }>("aithos.get_identity", { did });
+    return idResp.object;
+  });
+}
+
+/**
+ * Pre-fetch the prior blobs a carry-forward needs (the author fns take a SYNC
+ * getBlob). Only LEGACY descriptors (no `blob_sha`) require it — content-
+ * addressed sections are carried by sha (omitted) or re-encrypted fresh, so
+ * their prior blob is never re-uploaded. Fetches run with bounded concurrency
+ * instead of one-by-one: a first publish over a large pre-content-addressed
+ * ethos was previously M sequential round-trips.
+ */
+async function prefetchLegacyBlobs(
+  did: string,
+  prevManifest: ManifestV03,
+  readAuth: ReadAuth | undefined,
+): Promise<Map<string, Uint8Array>> {
+  const targets: { file: string; sectionId: string; zone: SphereName }[] = [];
+  for (const zone of SPHERES) {
+    for (const desc of prevManifest.zones[zone]?.sections ?? []) {
+      if (desc.blob_sha) continue;
+      targets.push({ file: desc.file, sectionId: desc.section_id, zone });
+    }
+  }
+  const blobMap = new Map<string, Uint8Array>();
+  const bytes = await mapLimit(targets, DEFAULT_RPC_CONCURRENCY, (t) =>
+    fetchSectionBlob(did, t.sectionId, t.zone === "public" ? undefined : readAuth),
+  );
+  targets.forEach((t, i) => blobMap.set(t.file, bytes[i]!));
+  return blobMap;
+}
+
+/** Merge in-hand mandates (freshly minted, not yet visible in `list_mandates`)
+ *  into fetched grants — deduped by wrap recipient, extras win. */
+function mergeExtraGrants(
+  grants: { circle: readonly DelegateGrantWithScopes[]; self: readonly DelegateGrantWithScopes[] },
+  extras: readonly SignedMandate[] | undefined,
+): { circle: readonly DelegateGrantWithScopes[]; self: readonly DelegateGrantWithScopes[] } {
+  if (!extras || extras.length === 0) return grants;
+  const out = { circle: [...grants.circle], self: [...grants.self] };
+  for (const mandate of extras) {
+    const g = mandateToGrant(mandate);
+    for (const zone of ["circle", "self"] as const) {
+      const grant = g[zone];
+      if (!grant) continue;
+      const i = out[zone].findIndex((x) => x.recipient.didUrl === grant.recipient.didUrl);
+      if (i >= 0) out[zone][i] = grant;
+      else out[zone].push(grant);
+    }
+  }
+  return out;
+}
+
 /** Fetch the v0.3 manifest, throwing the legacy-v0.2 signal when the subject's
  *  current edition isn't v0.3 (same error {@link loadEthosV03} raises). */
 async function fetchManifestV03(did: string): Promise<ManifestV03> {
@@ -205,8 +271,23 @@ export async function loadEthosIndexV03(
   delegate?: DelegateReaderArgs,
 ): Promise<{ manifest: ManifestV03; index: Record<SphereName, IndexRow[]> }> {
   const manifest = await fetchManifestV03(did);
+  return { manifest, index: zoneIndexFromManifest(manifest, identity, delegate) };
+}
+
+/**
+ * Build the per-zone index (section titles + flags) from an IN-HAND manifest —
+ * the pure, zero-network half of {@link loadEthosIndexV03}. Local crypto only
+ * (self titles are unsealed with the owner/delegate key when available). Lets a
+ * caller that just PUBLISHED an edition reconstruct the fresh index from the
+ * manifest it authored instead of re-fetching it.
+ */
+export function zoneIndexFromManifest(
+  manifest: ManifestV03,
+  identity?: StoredIdentity,
+  delegate?: DelegateReaderArgs,
+): Record<SphereName, IndexRow[]> {
   const subjectDid = manifest.subject_did;
-  const owner = identity && identity.did === did ? identity : undefined;
+  const owner = identity && identity.did === subjectDid ? identity : undefined;
   const index = {} as Record<SphereName, IndexRow[]>;
   for (const zone of SPHERES) {
     const zm = manifest.zones[zone];
@@ -214,7 +295,7 @@ export async function loadEthosIndexV03(
       ? readZoneIndex(zm, subjectDid, sectionReaderForZone(zone, subjectDid, owner, delegate))
       : [];
   }
-  return { manifest, index };
+  return index;
 }
 
 /**
@@ -268,20 +349,29 @@ export async function loadEthosV03(
   const owner = identity && identity.did === did ? identity : undefined;
   const sections = {} as Record<SphereName, Section[]>;
   const readAuth = readAuthFor(subjectDid, owner, delegate);
-  for (const zone of SPHERES) {
-    const zm = manifest.zones[zone];
-    const reader = zm ? sectionReaderForZone(zone, subjectDid, owner, delegate) : undefined;
-    const list: Section[] = [];
-    if (zm && (zone === "public" || reader)) {
-      const auth = zone === "public" ? undefined : readAuth;
-      for (const desc of zm.sections) {
-        const blob = await fetchSectionBlob(did, desc.section_id, auth);
-        const res = readSection(zm, desc, blob, subjectDid, reader);
-        if (res.accessible && res.section) list.push(res.section);
+
+  // Fan the per-section fetches out with bounded concurrency instead of one
+  // sequential await per section (the old N+1: 1 + N round-trips). Zones run
+  // in parallel too; document order is preserved because results are mapped
+  // back by index. Decryption stays local + sequential (cheap).
+  await Promise.all(
+    SPHERES.map(async (zone) => {
+      const zm = manifest.zones[zone];
+      const reader = zm ? sectionReaderForZone(zone, subjectDid, owner, delegate) : undefined;
+      const list: Section[] = [];
+      if (zm && (zone === "public" || reader)) {
+        const auth = zone === "public" ? undefined : readAuth;
+        const blobs = await mapLimit(zm.sections, DEFAULT_RPC_CONCURRENCY, (desc) =>
+          fetchSectionBlob(did, desc.section_id, auth),
+        );
+        zm.sections.forEach((desc, i) => {
+          const res = readSection(zm, desc, blobs[i]!, subjectDid, reader);
+          if (res.accessible && res.section) list.push(res.section);
+        });
       }
-    }
-    sections[zone] = list;
-  }
+      sections[zone] = list;
+    }),
+  );
   return { manifest, index, sections };
 }
 
@@ -318,6 +408,14 @@ export interface PublishV03OwnerArgs {
   /** subject_handle / display_name — defaults from prevManifest when present. */
   readonly handle?: string;
   readonly displayName?: string;
+  /**
+   * In-hand mandates to seal IN ADDITION to the server-listed active grants —
+   * typically the mandate minted milliseconds ago, which `list_mandates`
+   * (eventually-consistent index) may not surface yet. Merged over the fetched
+   * grants (deduped by wrap recipient), which makes "mint → immediately
+   * reseal" deterministic instead of racing the index settle.
+   */
+  readonly extraGrantMandates?: readonly SignedMandate[];
 }
 
 export interface PublishV03Result {
@@ -334,10 +432,6 @@ export async function publishEthosEditionV03Owner(args: PublishV03OwnerArgs): Pr
   const browserId = browserIdentityFromStored(args.identity);
   const did = browserId.did;
 
-  // did.json (exact server byte-shape) → its sha256 anchors the manifest.
-  const idResp = await readRpc<{ object: DidDocument }>("aithos.get_identity", { did });
-  const didJson = new TextEncoder().encode(JSON.stringify(idResp.object, null, 2) + "\n");
-
   const handle = args.handle ?? args.prevManifest?.subject_handle;
   const displayName = args.displayName ?? args.prevManifest?.display_name ?? handle;
   if (!handle) {
@@ -350,31 +444,33 @@ export async function publishEthosEditionV03Owner(args: PublishV03OwnerArgs): Pr
     ...(args.selfSections ? { self: args.selfSections } : {}),
   };
 
-  // Carry-forward needs the prior blobs (authorBundleV03 takes a SYNC getBlob),
-  // so pre-fetch every prior section blob into a map first.
+  // The three pre-publish lookups are independent — run them CONCURRENTLY
+  // instead of one after the other (each was a full round-trip):
   //
-  // Accept ANY prevManifest, not just v0.3: a v0.2 (monolithic) manifest is a
-  // valid predecessor for the owner migration (§1) — it carries bundle_id and
-  // edition.height, so the new edition links at height+1 with the correct
-  // prev_hash. Its v1 zones have no per-section `.sections`, so `?.sections ?? []`
-  // yields an empty prefetch (nothing to carry forward → every section is
-  // re-encrypted fresh, which is exactly what a migration wants).
+  //   1. did.json (exact server byte-shape) → its sha256 anchors the manifest.
+  //      Memoized via the opt-in identity cache.
+  //   2. Legacy-blob pre-fetch for carry-forward (authorBundleV03 takes a SYNC
+  //      getBlob). Accept ANY prevManifest, not just v0.3: a v0.2 (monolithic)
+  //      manifest is a valid predecessor for the owner migration (§1) — it
+  //      carries bundle_id and edition.height, so the new edition links at
+  //      height+1 with the correct prev_hash. Its v1 zones have no per-section
+  //      `.sections`, so the prefetch is empty (nothing to carry forward →
+  //      every section is re-encrypted fresh, exactly what a migration wants).
+  //   3. Active delegate grants → per-section recipients (§3.5.7′): each
+  //      section is sealed to the subject plus every delegate whose
+  //      read-bearing scopes cover it. Best-effort: a grant we can't resolve
+  //      is skipped (surfaced in errors), never blocking the owner's publish.
+  const [didDoc, blobMap, fetchedGrants] = await Promise.all([
+    fetchIdentityDocV03(did),
+    args.prevManifest
+      ? prefetchLegacyBlobs(did, args.prevManifest, ownerReadAuth(did, browserId))
+      : Promise.resolve(new Map<string, Uint8Array>()),
+    fetchActiveDelegateGrants(did),
+  ]);
+  const didJson = new TextEncoder().encode(JSON.stringify(didDoc, null, 2) + "\n");
+
   let prev: { manifest: ManifestV03; getBlob: (file: string) => Uint8Array } | undefined;
   if (args.prevManifest) {
-    const blobMap = new Map<string, Uint8Array>();
-    const readAuth = ownerReadAuth(did, browserId);
-    for (const zone of SPHERES) {
-      for (const desc of args.prevManifest.zones[zone]?.sections ?? []) {
-        // Content-addressed sections are carried forward by sha (omitted) or
-        // re-encrypted fresh — either way their prior blob is never re-uploaded,
-        // so skip the pre-fetch. Only legacy (no blob_sha) predecessors need it.
-        if (desc.blob_sha) continue;
-        blobMap.set(
-          desc.file,
-          await fetchSectionBlob(did, desc.section_id, zone === "public" ? undefined : readAuth),
-        );
-      }
-    }
     prev = {
       manifest: args.prevManifest,
       getBlob: (file) => {
@@ -385,11 +481,11 @@ export async function publishEthosEditionV03Owner(args: PublishV03OwnerArgs): Pr
     };
   }
 
-  // Active delegate grants → per-section recipients (§3.5.7′): each section is
-  // sealed to the subject plus every delegate whose read-bearing scopes cover
-  // it. Best-effort: a grant we can't resolve is skipped (surfaced in errors),
-  // never blocking the owner's own publish.
-  const grants = await fetchActiveDelegateGrants(did);
+  // Freshly-minted mandates the index may not list yet seal in deterministically.
+  const grants = mergeExtraGrants(
+    { circle: fetchedGrants.circle, self: fetchedGrants.self },
+    args.extraGrantMandates,
+  );
   const { manifest, blobs } =
     args.patch && prev
       ? // DELTA: author from the patch, carrying untouched sections forward by
@@ -497,29 +593,24 @@ export async function publishEthosEditionV03Delegate(
   const handle = prevManifest.subject_handle;
   const displayName = prevManifest.display_name ?? handle;
 
-  // did.json (exact server byte-shape) anchors the manifest; the DID document
-  // also yields the subject's `#${zone}-kex` pubkey the delegate seals into.
-  const idResp = await readRpc<{ object: DidDocument }>("aithos.get_identity", { did });
-  const didDoc = idResp.object;
+  // Two independent pre-publish lookups, run CONCURRENTLY:
+  //
+  //   1. did.json (exact server byte-shape) anchors the manifest; the DID
+  //      document also yields the subject's `#${zone}-kex` pubkey the delegate
+  //      seals into. Memoized via the opt-in identity cache.
+  //   2. Carry-forward: patchEditionV03Delegate copies every zone the delegate
+  //      can't read VERBATIM. With content-addressing it carries those by
+  //      blob_sha (the server reuses the stored object), so the delegate no
+  //      longer pre-downloads opaque blobs of sections it can't read — only
+  //      legacy (no blob_sha) predecessors still require a (bounded-parallel)
+  //      pre-fetch.
+  const readAuth = delegateReadAuth(did, delegate.seed, delegate.pubkeyMultibase, args.mandate);
+  const [didDoc, blobMap] = await Promise.all([
+    fetchIdentityDocV03(did),
+    prefetchLegacyBlobs(did, prevManifest, readAuth),
+  ]);
   const didJson = new TextEncoder().encode(JSON.stringify(didDoc, null, 2) + "\n");
   const ownerZonePubkey = ownerZoneKexPubkey(didDoc, did, delegate.actorSphere);
-
-  // Carry-forward: patchEditionV03Delegate copies every zone the delegate can't
-  // read VERBATIM. With content-addressing it carries those by blob_sha (the
-  // server reuses the stored object), so the delegate no longer needs to
-  // pre-download opaque blobs of sections it can't read — only legacy (no
-  // blob_sha) predecessors still require a pre-fetch.
-  const blobMap = new Map<string, Uint8Array>();
-  const readAuth = delegateReadAuth(did, delegate.seed, delegate.pubkeyMultibase, args.mandate);
-  for (const zone of SPHERES) {
-    for (const desc of prevManifest.zones[zone]?.sections ?? []) {
-      if (desc.blob_sha) continue;
-      blobMap.set(
-        desc.file,
-        await fetchSectionBlob(did, desc.section_id, zone === "public" ? undefined : readAuth),
-      );
-    }
-  }
 
   const { manifest, blobs } = patchEditionV03Delegate({
     delegate,

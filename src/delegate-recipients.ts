@@ -23,6 +23,7 @@
 // the new edition is usable only by the owner, same as today's behaviour.
 
 import { readRpc, AithosRpcError } from "./api.js";
+import { cachedDelegateGrants } from "./perf-cache.js";
 import { edPubToX25519Pub } from "./crypto/kex.js";
 import {
   multibaseToEd25519PublicKey,
@@ -281,15 +282,67 @@ export interface DelegateGrantsByZone {
 }
 
 /**
+ * Project ONE in-hand signed mandate into per-zone {@link
+ * DelegateGrantWithScopes} entries — the grants-shaped sibling of
+ * {@link mandateToRecipients}. Used to inject a FRESHLY-minted mandate into a
+ * publish/reseal (`extraGrantMandates`) without waiting for the server's
+ * `list_mandates` index to settle (the DynamoDB GSI is eventually consistent,
+ * so "mint → immediately reseal" can otherwise miss the brand-new mandate and
+ * silently not seal the delegate in). Returns `{}` when the mandate has no
+ * grantee pubkey/id, is outside its validity window, or covers no sealed zone.
+ */
+export function mandateToGrant(
+  mandate: SignedMandate,
+  now: Date = new Date(),
+): Partial<Record<SealedZone, DelegateGrantWithScopes>> {
+  const pubkeyMb = mandate.grantee?.pubkey;
+  const granteeId = mandate.grantee?.id;
+  if (!pubkeyMb || !granteeId) return {};
+  const t = now.getTime();
+  if (mandate.not_before && Date.parse(mandate.not_before) > t) return {};
+  if (mandate.not_after && Date.parse(mandate.not_after) < t) return {};
+
+  let xPub: Uint8Array;
+  try {
+    xPub = edPubToX25519Pub(multibaseToEd25519PublicKey(pubkeyMb));
+  } catch {
+    return {};
+  }
+  const grant: DelegateGrantWithScopes = {
+    recipient: { didUrl: `${granteeId}#${pubkeyMb}`, x25519PublicKey: xPub },
+    scopes: mandate.scopes ?? [],
+  };
+  const out: Partial<Record<SealedZone, DelegateGrantWithScopes>> = {};
+  if (anyReadBearingForZone(grant.scopes, "circle")) out.circle = grant;
+  if (anyReadBearingForZone(grant.scopes, "self")) out.self = grant;
+  return out;
+}
+
+/**
  * Like {@link fetchActiveDelegateRecipients} but keeps each active grant's
  * mandate `scopes`, so the v0.3 owner author can derive **per-section**
  * recipients (a whole-zone grant matches every section; a section-scoped grant
  * only its own — spec §3.5.7′). Same listing/resolution surface (public reads),
  * same non-fatal error handling.
+ *
+ * Memoized through {@link cachedDelegateGrants} (single-flight + TTL) when the
+ * host opted in via `configurePerfCaches({ delegateGrantsTtlMs })`; disabled by
+ * default, so the historical always-fresh behaviour is unchanged. Hosts that
+ * enable it must call `invalidateDelegateGrantsCache(ownerDid)` after minting
+ * or revoking a mandate. The cache is keyed by `ownerDid` only — callers that
+ * inject a custom `now` should leave the cache disabled.
  */
 export async function fetchActiveDelegateGrants(
   ownerDid: string,
-  now: Date = new Date(),
+  now?: Date,
+): Promise<DelegateGrantsByZone> {
+  if (now !== undefined) return fetchActiveDelegateGrantsUncached(ownerDid, now);
+  return cachedDelegateGrants(ownerDid, () => fetchActiveDelegateGrantsUncached(ownerDid, new Date()));
+}
+
+async function fetchActiveDelegateGrantsUncached(
+  ownerDid: string,
+  now: Date,
 ): Promise<DelegateGrantsByZone> {
   const nowSec = Math.floor(now.getTime() / 1000);
   const rows = await collectMandates(ownerDid);

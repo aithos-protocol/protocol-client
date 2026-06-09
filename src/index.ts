@@ -25,6 +25,12 @@ export const VERSION = "0.1.0-alpha.14";
 // --- API client (JSON-RPC 2.0 to api.aithos.be) ---
 export * from "./api.js";
 
+// --- Bounded-concurrency mapper (per-section RPC fan-out) ---
+export * from "./concurrency.js";
+
+// --- Opt-in perf caches (identity doc + delegate grants) ---
+export * from "./perf-cache.js";
+
 // --- Connect handshake parser + sphere inference ---
 export * from "./connect-request.js";
 
@@ -157,6 +163,8 @@ export {
   type AuthoredV03,
   type DelegateAuthorV03,
   type DelegatePatchArgs,
+  type DelegateReadGrant,
+  type OwnerPatchArgs,
   subjectRecipient,
   renderSectionMarkdown,
   encryptSection,
@@ -169,6 +177,7 @@ export {
   delegateZoneRecipients,
   ownerZoneKexPubkey,
   patchEditionV03Delegate,
+  patchEditionV03Owner,
 } from "./crypto/bundle-v03-write.js";
 
 export * from "./crypto/envelope.js";
