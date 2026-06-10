@@ -20,10 +20,10 @@ import type { StoredIdentity } from "./storage-types.js";
 import { browserIdentityFromStored } from "./crypto/identity.js";
 import type { DidDocument } from "./crypto/identity.js";
 import type { Section } from "./crypto/manifest.js";
-import { buildSignedEnvelope } from "./crypto/envelope.js";
+import { buildSignedEnvelope, type SignedEnvelope } from "./crypto/envelope.js";
 import type { SignedMandate } from "./crypto/mandate.js";
 import { readRpc } from "./api.js";
-import { writeEndpoint } from "./endpoints.js";
+import { readEndpoint, writeEndpoint } from "./endpoints.js";
 import { sha256 } from "@noble/hashes/sha2";
 import { bytesToHex, multibaseToEd25519PublicKey } from "./crypto/encoding.js";
 import {
@@ -72,11 +72,19 @@ export interface EthosV03Snapshot {
   readonly sections?: Record<SphereName, Section[]>;
 }
 
-/** Fetch one section blob by id (base64 → bytes) via get_ethos_section. */
-async function fetchSectionBlob(did: string, sectionId: string): Promise<Uint8Array> {
+/** Fetch one section blob by id (base64 → bytes) via get_ethos_section. When
+ *  `auth` is provided (encrypted zones), the request carries a signed §11
+ *  envelope so the server can authorize + revocation-check the read; public
+ *  reads pass no auth and stay anonymous. */
+async function fetchSectionBlob(
+  did: string,
+  sectionId: string,
+  auth?: ReadAuth,
+): Promise<Uint8Array> {
+  const params = { did, section_id: sectionId };
   const signed = await readRpc<{ object: { bytes_base64: string } }>(
     "aithos.get_ethos_section",
-    { did, section_id: sectionId },
+    auth ? { ...params, _envelope: auth("aithos.get_ethos_section", params) } : params,
   );
   return bytesFromBase64(signed.object.bytes_base64);
 }
@@ -90,6 +98,68 @@ export interface DelegateReaderArgs {
   readonly pubkeyMultibase: string;
   /** The delegate's Ed25519 seed (32 bytes). */
   readonly seed: Uint8Array;
+  /** The signed mandate, attached to the §11 read envelope so the server can
+   *  authorize + revocation-check the delegate's encrypted-zone reads. Without
+   *  it, encrypted reads fall back to anonymous (public-only). */
+  readonly mandate?: SignedMandate;
+}
+
+/** A read-envelope signer: builds a signed §11 envelope for an encrypted-zone
+ *  read RPC. Public reads pass no auth and stay anonymous. */
+export type ReadAuth = (method: string, params: unknown) => SignedEnvelope;
+
+/** Owner read-auth: signs with the subject's `#public` sphere key, which
+ *  authorizes reading ANY of the subject's own zones (the server only checks
+ *  iss === subject for a non-delegate envelope). */
+function ownerReadAuth(
+  subjectDid: string,
+  browserId: ReturnType<typeof browserIdentityFromStored>,
+): ReadAuth {
+  return (method, params) =>
+    buildSignedEnvelope({
+      iss: subjectDid,
+      aud: readEndpoint(),
+      method,
+      verificationMethod: `${subjectDid}#public`,
+      params,
+      signer: browserId.public,
+    });
+}
+
+/** Delegate read-auth: signs with the delegate key and attaches its mandate; the
+ *  server scope-checks the mandate per section and rejects it if revoked. */
+function delegateReadAuth(
+  subjectDid: string,
+  seed: Uint8Array,
+  pubkeyMultibase: string,
+  mandate: SignedMandate,
+): ReadAuth {
+  const signer = { seed, publicKey: multibaseToEd25519PublicKey(pubkeyMultibase) };
+  return (method, params) =>
+    buildSignedEnvelope({
+      iss: subjectDid,
+      aud: readEndpoint(),
+      method,
+      verificationMethod: pubkeyMultibase,
+      signer,
+      mandate,
+      params,
+    });
+}
+
+/** Pick the read-auth for the current reader: owner (sphere key) or delegate
+ *  (mandate). Returns undefined for an anonymous reader → encrypted reads stay
+ *  public-only. */
+function readAuthFor(
+  subjectDid: string,
+  owner: StoredIdentity | undefined,
+  delegate: DelegateReaderArgs | undefined,
+): ReadAuth | undefined {
+  if (owner) return ownerReadAuth(subjectDid, browserIdentityFromStored(owner));
+  if (delegate?.mandate) {
+    return delegateReadAuth(subjectDid, delegate.seed, delegate.pubkeyMultibase, delegate.mandate);
+  }
+  return undefined;
 }
 
 /** The section reader for a zone: `public` → none (plaintext); `circle`/`self`
@@ -168,7 +238,8 @@ export async function loadSectionV03(
   const owner = identity && identity.did === subjectDid ? identity : undefined;
   const reader = sectionReaderForZone(zone, subjectDid, owner, delegate);
   if (zone !== "public" && !reader) return null;
-  const blob = await fetchSectionBlob(subjectDid, sectionId);
+  const auth = zone === "public" ? undefined : readAuthFor(subjectDid, owner, delegate);
+  const blob = await fetchSectionBlob(subjectDid, sectionId, auth);
   const res = readSection(zm, desc, blob, subjectDid, reader);
   return res.accessible && res.section ? res.section : null;
 }
@@ -196,13 +267,15 @@ export async function loadEthosV03(
   const subjectDid = manifest.subject_did;
   const owner = identity && identity.did === did ? identity : undefined;
   const sections = {} as Record<SphereName, Section[]>;
+  const readAuth = readAuthFor(subjectDid, owner, delegate);
   for (const zone of SPHERES) {
     const zm = manifest.zones[zone];
     const reader = zm ? sectionReaderForZone(zone, subjectDid, owner, delegate) : undefined;
     const list: Section[] = [];
     if (zm && (zone === "public" || reader)) {
+      const auth = zone === "public" ? undefined : readAuth;
       for (const desc of zm.sections) {
-        const blob = await fetchSectionBlob(did, desc.section_id);
+        const blob = await fetchSectionBlob(did, desc.section_id, auth);
         const res = readSection(zm, desc, blob, subjectDid, reader);
         if (res.accessible && res.section) list.push(res.section);
       }
@@ -289,13 +362,17 @@ export async function publishEthosEditionV03Owner(args: PublishV03OwnerArgs): Pr
   let prev: { manifest: ManifestV03; getBlob: (file: string) => Uint8Array } | undefined;
   if (args.prevManifest) {
     const blobMap = new Map<string, Uint8Array>();
+    const readAuth = ownerReadAuth(did, browserId);
     for (const zone of SPHERES) {
       for (const desc of args.prevManifest.zones[zone]?.sections ?? []) {
         // Content-addressed sections are carried forward by sha (omitted) or
         // re-encrypted fresh — either way their prior blob is never re-uploaded,
         // so skip the pre-fetch. Only legacy (no blob_sha) predecessors need it.
         if (desc.blob_sha) continue;
-        blobMap.set(desc.file, await fetchSectionBlob(did, desc.section_id));
+        blobMap.set(
+          desc.file,
+          await fetchSectionBlob(did, desc.section_id, zone === "public" ? undefined : readAuth),
+        );
       }
     }
     prev = {
@@ -433,10 +510,14 @@ export async function publishEthosEditionV03Delegate(
   // pre-download opaque blobs of sections it can't read — only legacy (no
   // blob_sha) predecessors still require a pre-fetch.
   const blobMap = new Map<string, Uint8Array>();
+  const readAuth = delegateReadAuth(did, delegate.seed, delegate.pubkeyMultibase, args.mandate);
   for (const zone of SPHERES) {
     for (const desc of prevManifest.zones[zone]?.sections ?? []) {
       if (desc.blob_sha) continue;
-      blobMap.set(desc.file, await fetchSectionBlob(did, desc.section_id));
+      blobMap.set(
+        desc.file,
+        await fetchSectionBlob(did, desc.section_id, zone === "public" ? undefined : readAuth),
+      );
     }
   }
 
