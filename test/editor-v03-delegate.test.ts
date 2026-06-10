@@ -248,6 +248,13 @@ describe("loadEthosV03 — delegate reader path", () => {
             result: { object: { bytes_base64: bytesToBase64(ed.blobs.get(desc.blob_sha!)!) } },
           });
         }
+        if (b.method === "aithos.get_ethos_sections") {
+          // Legacy provider: batch primitive not deployed → JSON-RPC -32601.
+          // Exercises the client's memoized fallback to bounded singles.
+          return jsonResponse({
+            error: { code: -32601, message: `method not found: ${b.method}` },
+          });
+        }
       }
       throw new Error("unexpected read " + u);
     }) as unknown as typeof fetch;

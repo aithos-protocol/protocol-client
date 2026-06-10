@@ -22,7 +22,7 @@ import type { DidDocument } from "./crypto/identity.js";
 import type { Section } from "./crypto/manifest.js";
 import { buildSignedEnvelope, type SignedEnvelope } from "./crypto/envelope.js";
 import type { SignedMandate } from "./crypto/mandate.js";
-import { readRpc } from "./api.js";
+import { AithosRpcError, readRpc } from "./api.js";
 import { readEndpoint, writeEndpoint } from "./endpoints.js";
 import { sha256 } from "@noble/hashes/sha2";
 import { bytesToHex, multibaseToEd25519PublicKey } from "./crypto/encoding.js";
@@ -93,6 +93,67 @@ async function fetchSectionBlob(
     auth ? { ...params, _envelope: auth("aithos.get_ethos_section", params) } : params,
   );
   return bytesFromBase64(signed.object.bytes_base64);
+}
+
+/** Per-process memo: does the provider expose the batch read primitive?
+ *  `undefined` = unknown (try it), `false` = got -32601 once (fall back and
+ *  stop probing). Reset implicitly on page reload; a provider GAINING the
+ *  method mid-session just means one reload before the client uses it. */
+let batchReadSupported: boolean | undefined;
+
+/**
+ * Fetch MANY section blobs: `aithos.get_ethos_sections` (≤64 ids per call, ONE
+ * envelope per call) when the provider supports it, with transparent fallback
+ * to bounded-parallel single reads (-32601 → legacy provider, memoized).
+ * Sections absent from the result (missing/forbidden — the server returns no
+ * oracle) are simply absent from the map; the single-read fallback mirrors
+ * that by skipping per-section authorization denials.
+ */
+async function fetchSectionBlobs(
+  did: string,
+  ids: readonly string[],
+  auth?: ReadAuth,
+): Promise<Map<string, Uint8Array>> {
+  const out = new Map<string, Uint8Array>();
+  if (ids.length === 0) return out;
+  if (batchReadSupported !== false && ids.length > 1) {
+    try {
+      for (let i = 0; i < ids.length; i += 64) {
+        const chunk = ids.slice(i, i + 64);
+        const params = { did, section_ids: chunk };
+        const r = await readRpc<{
+          objects: Record<string, { bytes_base64: string }>;
+          missing: readonly string[];
+        }>(
+          "aithos.get_ethos_sections",
+          auth ? { ...params, _envelope: auth("aithos.get_ethos_sections", params) } : params,
+        );
+        for (const [id, o] of Object.entries(r.objects)) {
+          out.set(id, bytesFromBase64(o.bytes_base64));
+        }
+      }
+      batchReadSupported = true;
+      return out;
+    } catch (e) {
+      if (e instanceof AithosRpcError && e.code === -32601) {
+        batchReadSupported = false; // legacy provider — remember, fall back
+      } else {
+        throw e;
+      }
+    }
+  }
+  // Fallback: bounded-parallel singles. Authorization denials on individual
+  // sections are skipped (≡ the batch's `missing`), other errors propagate.
+  await mapLimit(ids, DEFAULT_RPC_CONCURRENCY, async (id) => {
+    try {
+      out.set(id, await fetchSectionBlob(did, id, auth));
+    } catch (e) {
+      const denied =
+        e instanceof AithosRpcError && (e.code === -32010 || e.code === -32041 || e.code === -32042);
+      if (!denied) throw e;
+    }
+  });
+  return out;
 }
 
 /** A delegate reader's key material — decrypts only the sections (and index
@@ -350,10 +411,11 @@ export async function loadEthosV03(
   const sections = {} as Record<SphereName, Section[]>;
   const readAuth = readAuthFor(subjectDid, owner, delegate);
 
-  // Fan the per-section fetches out with bounded concurrency instead of one
-  // sequential await per section (the old N+1: 1 + N round-trips). Zones run
-  // in parallel too; document order is preserved because results are mapped
-  // back by index. Decryption stays local + sequential (cheap).
+  // Batched reads when the provider supports aithos.get_ethos_sections (≤64
+  // ids + ONE envelope per call), bounded-parallel singles otherwise. Zones
+  // run in parallel; document order is preserved (descriptors drive the loop,
+  // the map is keyed by id). Sections the reader isn't authorized for simply
+  // don't come back (no oracle) and are skipped — same surface as before.
   await Promise.all(
     SPHERES.map(async (zone) => {
       const zm = manifest.zones[zone];
@@ -361,13 +423,17 @@ export async function loadEthosV03(
       const list: Section[] = [];
       if (zm && (zone === "public" || reader)) {
         const auth = zone === "public" ? undefined : readAuth;
-        const blobs = await mapLimit(zm.sections, DEFAULT_RPC_CONCURRENCY, (desc) =>
-          fetchSectionBlob(did, desc.section_id, auth),
+        const blobs = await fetchSectionBlobs(
+          did,
+          zm.sections.map((d) => d.section_id),
+          auth,
         );
-        zm.sections.forEach((desc, i) => {
-          const res = readSection(zm, desc, blobs[i]!, subjectDid, reader);
+        for (const desc of zm.sections) {
+          const blob = blobs.get(desc.section_id);
+          if (!blob) continue; // missing/forbidden — skip, like a failed decrypt
+          const res = readSection(zm, desc, blob, subjectDid, reader);
           if (res.accessible && res.section) list.push(res.section);
-        });
+        }
       }
       sections[zone] = list;
     }),
