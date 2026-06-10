@@ -83,6 +83,25 @@ export function isV04Manifest(m: unknown): m is ManifestV04 {
   return !!m && (m as { aithos?: string }).aithos === "0.4.0";
 }
 
+/** Fetch the subject's did.json (uncached — tiny, and the fence path that
+ *  needs it is rare). */
+export async function fetchDidDocAny(did: string): Promise<DidDocument> {
+  const res = await readRpc<{ object: DidDocument }>("aithos.get_identity", { did });
+  return res.object;
+}
+
+/** Fetch the subject's CURRENT manifest, whatever its format — the version
+ *  probe every dual-format client needs before picking a loader. */
+export async function fetchManifestAny(
+  did: string,
+): Promise<{ aithos?: string } & Record<string, unknown>> {
+  const res = await readRpc<{ object: { aithos?: string } & Record<string, unknown> }>(
+    "aithos.get_ethos_manifest",
+    { did },
+  );
+  return res.object;
+}
+
 /* -------------------------------------------------------------------------- */
 /*  Object fetch (batch ≤64)                                                  */
 /* -------------------------------------------------------------------------- */

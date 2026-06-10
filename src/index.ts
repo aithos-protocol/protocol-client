@@ -67,6 +67,14 @@ export * from "./editor.js";
 
 // --- v0.3 per-section editor (read + owner publish over the v0.3 RPCs) ---
 export * from "./editor-v03.js";
+export * from "./editor-v04.js";
+export { manifestHashHexV04Pc } from "./crypto/bundle-v04.js";
+export {
+  openZoneKey as openZoneKeyV04Pc,
+  sealZoneKeyTo as sealZoneKeyToV04Pc,
+  type KeyRingV04Pc,
+  type ExtraWrapsV04Pc,
+} from "./crypto/bundle-v04.js";
 
 // --- Delegate recipients resolution (canonical for SealedZone) ---
 export * from "./delegate-recipients.js";
