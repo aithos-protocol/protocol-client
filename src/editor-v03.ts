@@ -423,6 +423,27 @@ export interface PublishV03OwnerArgs {
    * (the explicit "Rotate keys" hard-cut, requires `fetchBody`).
    */
   readonly resealMode?: "additive" | "rotate";
+  /**
+   * Where the delegate grants come from:
+   *  - `"fetch"` (default) — crawl the server's active mandates
+   *    (list_mandates + get_mandate), merged with `extraGrantMandates`.
+   *  - `"extras-only"` — SKIP the crawl entirely; only `extraGrantMandates`
+   *    are sealed. This is the targeted `sealGrant` fast path: with the
+   *    additive default, carried sections keep their stored wraps and ONLY the
+   *    in-hand mandate's wraps are appended where its scopes cover — zero
+   *    mandate-crawl, zero blob upload, manifest-only. RESERVED for
+   *    empty-patch publishes (seal/prune): a content publish would rebuild its
+   *    edited sections' recipients from this (empty) grant set and silently
+   *    drop every other delegate — so a non-empty patch throws.
+   */
+  readonly grants?: "fetch" | "extras-only";
+  /**
+   * Wrap-pruning set forwarded to the author (see
+   * OwnerPatchArgs.pruneRecipients): labels of DEAD (revoked/expired)
+   * mandates whose wraps are dropped from carried sections. Metadata-only —
+   * no re-encryption, no security claim; the owner wrap is never pruned.
+   */
+  readonly pruneRecipients?: ReadonlySet<string>;
 }
 
 export interface PublishV03Result {
@@ -451,6 +472,22 @@ export async function publishEthosEditionV03Owner(args: PublishV03OwnerArgs): Pr
     ...(args.selfSections ? { self: args.selfSections } : {}),
   };
 
+  // extras-only grants are reserved for seal/prune publishes (empty patch) —
+  // a content publish would rebuild its edited sections' recipients from this
+  // partial grant set and silently drop every other active delegate.
+  if (args.grants === "extras-only") {
+    const p = args.patch ?? {};
+    const dirty = SPHERES.some(
+      (z) => (p[z]?.upserts?.length ?? 0) > 0 || (p[z]?.deletes?.length ?? 0) > 0,
+    );
+    if (dirty || args.publicSections || args.circleSections || args.selfSections) {
+      throw new EditV03Error(
+        "grants",
+        'grants:"extras-only" is reserved for empty-patch publishes (sealGrant / prune)',
+      );
+    }
+  }
+
   // The three pre-publish lookups are independent — run them CONCURRENTLY
   // instead of one after the other (each was a full round-trip):
   //
@@ -472,7 +509,9 @@ export async function publishEthosEditionV03Owner(args: PublishV03OwnerArgs): Pr
     args.prevManifest
       ? prefetchLegacyBlobs(did, args.prevManifest, ownerReadAuth(did, browserId))
       : Promise.resolve(new Map<string, Uint8Array>()),
-    fetchActiveDelegateGrants(did),
+    args.grants === "extras-only"
+      ? Promise.resolve({ circle: [], self: [], errors: [] } as const)
+      : fetchActiveDelegateGrants(did),
   ]);
   const didJson = new TextEncoder().encode(JSON.stringify(didDoc, null, 2) + "\n");
 
@@ -509,6 +548,7 @@ export async function publishEthosEditionV03Owner(args: PublishV03OwnerArgs): Pr
           ...(args.carriedSelfTags ? { carriedSelfTags: args.carriedSelfTags } : {}),
           ...(args.fetchBody ? { fetchBody: args.fetchBody } : {}),
           ...(args.resealMode ? { resealMode: args.resealMode } : {}),
+          ...(args.pruneRecipients ? { pruneRecipients: args.pruneRecipients } : {}),
         })
       : // FULL: re-author every zone from the supplied section lists (first
         // edition, v0.2 migration, or an explicit whole-bundle replace).

@@ -755,6 +755,22 @@ export interface OwnerPatchArgs {
    * current active grants (drops dead wraps, picks up newly-matching grants).
    */
   readonly resealMode?: "additive" | "rotate";
+  /**
+   * Wrap PRUNING — metadata hygiene, explicitly NOT a cryptographic cut.
+   *
+   * Wrap labels (`granteeId#pubkeyMultibase`) of mandates the CALLER asserts
+   * are DEAD (revoked or expired): their entries are dropped from every
+   * carried section's `cipher.wraps` / `title_cipher.wraps`. Bodies, DEKs and
+   * `blob_sha` are untouched — zero re-encryption, zero upload, manifest-only.
+   * This keeps the manifest from growing unboundedly under the additive
+   * doctrine and stops advertising the owner's past-delegate history; it adds
+   * NO security (an ex-delegate may have memorised the DEK — the server gate
+   * blocks its reads, the explicit rotate is the cryptographic cut).
+   *
+   * The subject's own `#<zone>-kex` wrap is never pruned, whatever the set
+   * contains. EDITED sections ignore this (they rebuild their wraps anyway).
+   */
+  readonly pruneRecipients?: ReadonlySet<string>;
   readonly now?: Date;
 }
 
@@ -826,6 +842,30 @@ export async function patchEditionV03Owner(args: OwnerPatchArgs): Promise<Author
       descriptors.push(w.descriptor);
     };
 
+    // Wrap pruning (metadata-only) for CARRIED sections — see
+    // OwnerPatchArgs.pruneRecipients. The owner wrap is structurally protected.
+    const ownerKex = `${args.subjectDid}#${zone}-kex`;
+    const applyPrune = (desc: SectionDescriptor): SectionDescriptor => {
+      const dead = args.pruneRecipients;
+      if (!dead || dead.size === 0 || !desc.cipher) return desc;
+      const keep = (w: WrapEntry) => w.recipient === ownerKex || !dead.has(w.recipient);
+      let out = desc;
+      const bw = desc.cipher.wraps.filter(keep);
+      if (bw.length !== desc.cipher.wraps.length) {
+        out = { ...out, cipher: { ...out.cipher!, wraps: bw } };
+      }
+      if (desc.title_cipher) {
+        const tw = desc.title_cipher.wraps.filter(keep);
+        if (tw.length !== desc.title_cipher.wraps.length) {
+          out = {
+            ...out,
+            title_cipher: { ...desc.title_cipher, wraps: tw },
+          } as SectionDescriptor;
+        }
+      }
+      return out;
+    };
+
     // Existing sections in their prior order: drop deletes, re-encrypt upserts,
     // otherwise carry forward — resealing only if recipients changed.
     for (const d of prevZone?.sections ?? []) {
@@ -837,7 +877,7 @@ export async function patchEditionV03Owner(args: OwnerPatchArgs): Promise<Author
         continue;
       }
       if (!encrypted) {
-        descriptors.push(carryForwardSection(d, args.prev.getBlob, blobs));
+        descriptors.push(applyPrune(carryForwardSection(d, args.prev.getBlob, blobs)));
         continue;
       }
       // self tags live in title_cipher → supplied via carriedSelfTags; circle
@@ -845,7 +885,7 @@ export async function patchEditionV03Owner(args: OwnerPatchArgs): Promise<Author
       const tags = zone === "self" ? args.carriedSelfTags?.get(d.section_id) : d.tags;
       const recipients = recipientsFor(d.section_id, tags);
       if (recipientLabelsEqual(d.cipher, recipients)) {
-        descriptors.push(carryForwardSection(d, args.prev.getBlob, blobs));
+        descriptors.push(applyPrune(carryForwardSection(d, args.prev.getBlob, blobs)));
         continue;
       }
 
@@ -861,7 +901,7 @@ export async function patchEditionV03Owner(args: OwnerPatchArgs): Promise<Author
         const newOnes = recipients.filter((r) => !prevLabels.has(r.didUrl));
         const carried = carryForwardSection(d, args.prev.getBlob, blobs);
         if (newOnes.length === 0) {
-          descriptors.push(carried);
+          descriptors.push(applyPrune(carried));
           continue;
         }
         const appended = appendWrapsToSection(
@@ -873,7 +913,7 @@ export async function patchEditionV03Owner(args: OwnerPatchArgs): Promise<Author
         );
         // Owner wrap unrecoverable → carry as-is; the new grant seals into this
         // section on its next edit or via an explicit rotate.
-        descriptors.push(appended ?? carried);
+        descriptors.push(applyPrune(appended ?? carried));
         continue;
       }
 
@@ -891,7 +931,7 @@ export async function patchEditionV03Owner(args: OwnerPatchArgs): Promise<Author
           zone as "circle" | "self",
         );
         if (rewrapped) {
-          descriptors.push(rewrapped); // blob_sha unchanged → body carried forward
+          descriptors.push(applyPrune(rewrapped)); // blob_sha unchanged → body carried forward
           continue;
         }
       }

@@ -795,4 +795,70 @@ describe("v0.3 owner delta author — ADDITIVE reseal (default, P0)", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  test("wrap PRUNING drops dead labels from carried sections (body + sealed title), never the owner", async () => {
+    const { id, subjectDid, didJson, pubA, ed1, prev, neverFetch } = sealedToA();
+    const ed2 = await patchEditionV03Owner({
+      identity: id,
+      subjectDid,
+      subjectHandle: "iris",
+      displayName: "Iris",
+      didJson,
+      delegateGrants: { circle: [] },
+      prev,
+      patch: {},
+      fetchBody: neverFetch,
+      pruneRecipients: new Set([`agent:a#${pubA}`, `${subjectDid}#circle-kex`]), // owner label ignored
+      now: T2,
+    });
+    const x1 = find(ed1.manifest as ManifestV03, "circle", "sec_x");
+    const x2 = find(ed2.manifest as ManifestV03, "circle", "sec_x");
+    assert.equal(x2.blob_sha, x1.blob_sha, "prune is manifest-only: body/blob untouched");
+    assert.equal(ed2.blobs.size, 0, "zero upload");
+    const recips = x2.cipher!.wraps.map((w) => w.recipient);
+    assert.ok(!recips.includes(`agent:a#${pubA}`), "dead wrap dropped");
+    assert.ok(recips.includes(`${subjectDid}#circle-kex`), "owner wrap NEVER pruned");
+    const ownerReader = ownerSectionReader(subjectDid, "circle", id.circle.seed);
+    const zm = (ed2.manifest as ManifestV03).zones.circle!;
+    assert.equal(
+      readSection(zm, x2, blobFor(x2, ed2.blobs, ed1.blobs), subjectDid, ownerReader).accessible,
+      true,
+      "owner still reads the pruned section (same DEK, same blob)",
+    );
+  });
+
+  test("prune + additive append in ONE edition: dead label out, fresh grant in, zero upload", async () => {
+    const { id, subjectDid, didJson, pubA, ed1, prev, neverFetch } = sealedToA();
+    const agentB = generateKeyPair();
+    const pubB = ed25519PublicKeyToMultibase(agentB.publicKey);
+    const ed2 = await patchEditionV03Owner({
+      identity: id,
+      subjectDid,
+      subjectHandle: "iris",
+      displayName: "Iris",
+      didJson,
+      delegateGrants: {
+        circle: [{
+          recipient: { didUrl: `agent:b#${pubB}`, x25519PublicKey: edPubToX25519Pub(agentB.publicKey) },
+          scopes: ["ethos.read.circle"],
+        }],
+      },
+      prev,
+      patch: {},
+      fetchBody: neverFetch,
+      pruneRecipients: new Set([`agent:a#${pubA}`]),
+      now: T2,
+    });
+    const x1 = find(ed1.manifest as ManifestV03, "circle", "sec_x");
+    const x2 = find(ed2.manifest as ManifestV03, "circle", "sec_x");
+    assert.equal(x2.blob_sha, x1.blob_sha);
+    assert.equal(ed2.blobs.size, 0);
+    const recips = x2.cipher!.wraps.map((w) => w.recipient);
+    assert.ok(!recips.includes(`agent:a#${pubA}`), "dead pruned");
+    assert.ok(recips.includes(`agent:b#${pubB}`), "fresh appended");
+    const bReader = delegateSectionReader("agent:b", pubB, agentB.seed);
+    const zm = (ed2.manifest as ManifestV03).zones.circle!;
+    const r = readSection(zm, x2, blobFor(x2, ed2.blobs, ed1.blobs), subjectDid, bReader);
+    assert.ok(r.accessible && r.section, "B decrypts via the appended wrap");
+  });
 });
