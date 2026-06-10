@@ -75,6 +75,9 @@ export * from "./delegate-recipients.js";
 // --- Mandate mint (build + sign a delegate bundle) ---
 export * from "./mandate-mint.js";
 
+// --- Revocation epoch (one-write "revoke all mandates") ---
+export * from "./mandate-epoch.js";
+
 // --- Onboarding (create identity, publish first edition) ---
 export * from "./onboarding.js";
 
