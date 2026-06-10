@@ -82,7 +82,7 @@ export interface EthosV03Snapshot {
  *  `auth` is provided (encrypted zones), the request carries a signed §11
  *  envelope so the server can authorize + revocation-check the read; public
  *  reads pass no auth and stay anonymous. */
-async function fetchSectionBlob(
+export async function fetchSectionBlob(
   did: string,
   sectionId: string,
   auth?: ReadAuth,
@@ -217,7 +217,7 @@ function delegateReadAuth(
 /** Pick the read-auth for the current reader: owner (sphere key) or delegate
  *  (mandate). Returns undefined for an anonymous reader → encrypted reads stay
  *  public-only. */
-function readAuthFor(
+export function readAuthFor(
   subjectDid: string,
   owner: StoredIdentity | undefined,
   delegate: DelegateReaderArgs | undefined,
