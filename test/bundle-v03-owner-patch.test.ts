@@ -531,7 +531,7 @@ describe("v0.3 owner delta author — cheap re-wrap on grant (no re-encryption)"
     assert.deepEqual(r.section!.tags, ["pricing"]);
   });
 
-  test("revoking a delegate rotates the DEK (re-encrypt, new blob_sha, old key locked out)", async () => {
+  test("ROTATE mode: revoking a delegate rotates the DEK (re-encrypt, new blob_sha, old key locked out)", async () => {
     const id = createBrowserIdentity("hank", "Hank");
     const subjectDid = id.did;
     const didJson = new TextEncoder().encode(JSON.stringify(signedDidDocument(id)));
@@ -577,6 +577,7 @@ describe("v0.3 owner delta author — cheap re-wrap on grant (no re-encryption)"
       prev,
       patch: {},
       fetchBody,
+      resealMode: "rotate", // the explicit hard-cut — additive (default) never removes
       now: T2,
     });
 
@@ -595,5 +596,203 @@ describe("v0.3 owner delta author — cheap re-wrap on grant (no re-encryption)"
       false,
       "revoked delegate cannot read the rotated section",
     );
+  });
+});
+
+describe("v0.3 owner delta author — ADDITIVE reseal (default, P0)", () => {
+  /** ed1 sealed to owner + delegate A on one circle section. */
+  function sealedToA() {
+    const id = createBrowserIdentity("iris", "Iris");
+    const subjectDid = id.did;
+    const didJson = new TextEncoder().encode(JSON.stringify(signedDidDocument(id)));
+    const agentA = generateKeyPair();
+    const pubA = ed25519PublicKeyToMultibase(agentA.publicKey);
+    const grantA: DelegateReadGrant = {
+      recipient: { didUrl: `agent:a#${pubA}`, x25519PublicKey: edPubToX25519Pub(agentA.publicKey) },
+      scopes: ["ethos.read.circle"],
+    };
+    const ed1 = authorBundleV03({
+      identity: id,
+      subjectDid,
+      subjectHandle: "iris",
+      displayName: "Iris",
+      didJson,
+      zones: { circle: [sec("sec_x", "X", "x-body")] },
+      delegateGrants: { circle: [grantA] },
+      now: T1,
+    });
+    const prev = { manifest: ed1.manifest, getBlob: (f: string) => ed1.blobs.get(f)! };
+    const neverFetch = async (): Promise<Section> => {
+      throw new Error("additive publish must NEVER call fetchBody");
+    };
+    return { id, subjectDid, didJson, agentA, pubA, ed1, prev, neverFetch };
+  }
+
+  test("a revoked delegate's wrap is KEPT: no re-encryption, no fetchBody, zero upload", async () => {
+    const { id, subjectDid, didJson, pubA, ed1, prev, neverFetch } = sealedToA();
+    // Grants now empty (A revoked) — the pure-shrink case that used to jam.
+    const ed2 = await patchEditionV03Owner({
+      identity: id,
+      subjectDid,
+      subjectHandle: "iris",
+      displayName: "Iris",
+      didJson,
+      delegateGrants: { circle: [] },
+      prev,
+      patch: {},
+      fetchBody: neverFetch,
+      now: T2,
+    });
+    const x1 = find(ed1.manifest as ManifestV03, "circle", "sec_x");
+    const x2 = find(ed2.manifest as ManifestV03, "circle", "sec_x");
+    assert.equal(x2.blob_sha, x1.blob_sha, "body untouched");
+    assert.equal(ed2.blobs.size, 0, "zero upload");
+    assert.ok(
+      x2.cipher!.wraps.map((w) => w.recipient).includes(`agent:a#${pubA}`),
+      "revoked residue kept verbatim (server gates its reads)",
+    );
+    // And the publish ACTUALLY produced a new edition (height bumped) — the
+    // P0 symptom was precisely that no edition could be published anymore.
+    assert.equal(ed2.manifest.edition.height, ed1.manifest.edition.height + 1);
+  });
+
+  test("P0 scenario: grant B while revoked A lingers → B appended, A kept, blob unchanged, B decrypts", async () => {
+    const { id, subjectDid, didJson, pubA, ed1, prev, neverFetch } = sealedToA();
+    const agentB = generateKeyPair();
+    const pubB = ed25519PublicKeyToMultibase(agentB.publicKey);
+    const grantB: DelegateReadGrant = {
+      recipient: { didUrl: `agent:b#${pubB}`, x25519PublicKey: edPubToX25519Pub(agentB.publicKey) },
+      scopes: ["ethos.read.circle"],
+    };
+    // Active grants = [B] only (A revoked) — used to force a re-encrypt + jam.
+    const ed2 = await patchEditionV03Owner({
+      identity: id,
+      subjectDid,
+      subjectHandle: "iris",
+      displayName: "Iris",
+      didJson,
+      delegateGrants: { circle: [grantB] },
+      prev,
+      patch: {},
+      fetchBody: neverFetch,
+      now: T2,
+    });
+    const x1 = find(ed1.manifest as ManifestV03, "circle", "sec_x");
+    const x2 = find(ed2.manifest as ManifestV03, "circle", "sec_x");
+    assert.equal(x2.blob_sha, x1.blob_sha, "append is a re-wrap: body/blob untouched");
+    assert.equal(ed2.blobs.size, 0, "zero upload");
+    const recips = x2.cipher!.wraps.map((w) => w.recipient);
+    assert.ok(recips.includes(`${subjectDid}#circle-kex`), "owner still wrapped");
+    assert.ok(recips.includes(`agent:a#${pubA}`), "revoked residue untouched");
+    assert.ok(recips.includes(`agent:b#${pubB}`), "fresh grant appended");
+
+    const zm = (ed2.manifest as ManifestV03).zones.circle!;
+    const bReader = delegateSectionReader("agent:b", pubB, agentB.seed);
+    const r = readSection(zm, x2, blobFor(x2, ed2.blobs, ed1.blobs), subjectDid, bReader);
+    assert.ok(r.accessible && r.section, "B opens the appended wrap");
+    assert.equal(r.section!.body, "x-body");
+    const ownerReader = ownerSectionReader(subjectDid, "circle", id.circle.seed);
+    assert.equal(
+      readSection(zm, x2, blobFor(x2, ed2.blobs, ed1.blobs), subjectDid, ownerReader).accessible,
+      true,
+      "owner still reads it",
+    );
+  });
+
+  test("an EDITED section resyncs its recipients (drops the revoked, adds the covered) — both modes", async () => {
+    const { id, subjectDid, didJson, pubA, ed1, prev } = sealedToA();
+    const agentB = generateKeyPair();
+    const pubB = ed25519PublicKeyToMultibase(agentB.publicKey);
+    const grantB: DelegateReadGrant = {
+      recipient: { didUrl: `agent:b#${pubB}`, x25519PublicKey: edPubToX25519Pub(agentB.publicKey) },
+      scopes: ["ethos.read.circle"],
+    };
+    // Content edit of sec_x with active grants = [B]: re-encryption is forced by
+    // the edit itself, so the recipient list is rebuilt from the active grants —
+    // the "free cleanup": A (revoked) is gone AND the new DEK is unknown to it.
+    const ed2 = await patchEditionV03Owner({
+      identity: id,
+      subjectDid,
+      subjectHandle: "iris",
+      displayName: "Iris",
+      didJson,
+      delegateGrants: { circle: [grantB] },
+      prev,
+      patch: { circle: { upserts: [sec("sec_x", "X", "x-body v2")] } },
+      now: T2,
+    });
+    const x1 = find(ed1.manifest as ManifestV03, "circle", "sec_x");
+    const x2 = find(ed2.manifest as ManifestV03, "circle", "sec_x");
+    assert.notEqual(x2.blob_sha, x1.blob_sha, "content edit → new DEK + new blob");
+    const recips = x2.cipher!.wraps.map((w) => w.recipient);
+    assert.ok(!recips.includes(`agent:a#${pubA}`), "revoked A dropped on edit (cleanup)");
+    assert.ok(recips.includes(`agent:b#${pubB}`), "covered B sealed on edit");
+  });
+
+  test("additive on self extends the sealed title too; protocol-core verifies the edition", async () => {
+    const id = createBrowserIdentity("jane", "Jane");
+    const subjectDid = id.did;
+    const didJson = new TextEncoder().encode(JSON.stringify(signedDidDocument(id)));
+    const agentA = generateKeyPair();
+    const pubA = ed25519PublicKeyToMultibase(agentA.publicKey);
+    const ed1 = authorBundleV03({
+      identity: id,
+      subjectDid,
+      subjectHandle: "jane",
+      displayName: "Jane",
+      didJson,
+      zones: { self: [sec("sec_s", "S", "s-body", ["plans"])] },
+      delegateGrants: {
+        self: [{
+          recipient: { didUrl: `agent:a#${pubA}`, x25519PublicKey: edPubToX25519Pub(agentA.publicKey) },
+          scopes: ["ethos.read.self"],
+        }],
+      },
+      now: T1,
+    });
+    const prev = { manifest: ed1.manifest, getBlob: (f: string) => ed1.blobs.get(f)! };
+    const agentB = generateKeyPair();
+    const pubB = ed25519PublicKeyToMultibase(agentB.publicKey);
+    const ed2 = await patchEditionV03Owner({
+      identity: id,
+      subjectDid,
+      subjectHandle: "jane",
+      displayName: "Jane",
+      didJson,
+      delegateGrants: {
+        self: [{
+          recipient: { didUrl: `agent:b#${pubB}`, x25519PublicKey: edPubToX25519Pub(agentB.publicKey) },
+          scopes: ["ethos.read.self"],
+        }],
+      },
+      prev,
+      patch: {},
+      carriedSelfTags: new Map([["sec_s", ["plans"]]]),
+      now: T2,
+    });
+    const s2 = find(ed2.manifest as ManifestV03, "self", "sec_s");
+    assert.equal(ed2.blobs.size, 0, "zero upload");
+    const titleRecips = s2.title_cipher!.wraps.map((w) => w.recipient);
+    assert.ok(titleRecips.includes(`agent:a#${pubA}`), "residue kept on title wraps");
+    assert.ok(titleRecips.includes(`agent:b#${pubB}`), "B appended on title wraps");
+    const bReader = delegateSectionReader("agent:b", pubB, agentB.seed);
+    const zm = (ed2.manifest as ManifestV03).zones.self!;
+    const r = readSection(zm, s2, blobFor(s2, ed2.blobs, ed1.blobs), subjectDid, bReader);
+    assert.ok(r.accessible && r.section, "B opens body via appended wrap");
+    assert.equal(r.section!.title, "S", "B opens the sealed title via appended wrap");
+
+    // The additive edition still verifies end-to-end under protocol-core,
+    // including the self reader (same harness as the delta test above).
+    const dir = writeBundle(ed2, didJson, ed1.blobs);
+    try {
+      const res = core.verifyBundleV03Dir(dir, {
+        readers: [
+          { didUrl: `${subjectDid}#self-kex`, x25519Secret: edSeedToX25519Secret(id.self.seed) },
+        ],
+      });
+      assert.ok(res.ok, `protocol-core verify failed: ${res.errors.join("; ")}`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

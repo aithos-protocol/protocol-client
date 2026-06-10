@@ -313,6 +313,70 @@ function recipientLabelsEqual(cipher: SectionCipher | undefined, recipients: rea
 }
 
 /**
+ * Additive wrap extension — APPEND recipients to a carried section WITHOUT
+ * re-encrypting its body and WITHOUT touching the wraps already stored. Recovers
+ * the DEK by unwrapping the subject's own wrap, then appends one wrap per new
+ * recipient (body and, for `self`, the sealed index `title_cipher`). Existing
+ * entries — including wraps of revoked/expired delegates — are preserved
+ * verbatim: a normal publication never removes a recipient (doctrine: the
+ * server gates revoked reads instantly; metadata cleanup is the explicit
+ * prune op; the cryptographic cut is the explicit rotate). `blob_sha` is
+ * unchanged → zero blob upload.
+ *
+ * Returns null when the subject's own wrap can't be recovered (the section can
+ * then only be resealed via an explicit rotate).
+ */
+function appendWrapsToSection(
+  prevDesc: SectionDescriptor,
+  add: readonly SectionRecipient[],
+  identity: BrowserIdentity,
+  subjectDid: string,
+  zone: "circle" | "self",
+): SectionDescriptor | null {
+  if (!prevDesc.cipher) return null;
+  const ownerDidUrl = `${subjectDid}#${zone}-kex`;
+  const ownerSk = edSeedToX25519Secret(identity[zone].seed);
+  try {
+    const extend = (wraps: readonly WrapEntry[]): WrapEntry[] | null => {
+      const ownerWrap = wraps.find((w) => w.recipient === ownerDidUrl);
+      if (!ownerWrap) return null;
+      let dek: Uint8Array;
+      try {
+        dek = unwrapDek(ownerWrap, ownerSk);
+      } catch {
+        return null; // subject wrap present but undecryptable → rotate-only repair
+      }
+      try {
+        const have = new Set(wraps.map((w) => w.recipient));
+        const extra = add
+          .filter((r) => !have.has(r.didUrl))
+          .map((r) => wrapDek(dek, r.didUrl, r.x25519PublicKey));
+        return [...wraps, ...extra];
+      } finally {
+        dek.fill(0);
+      }
+    };
+    const bodyWraps = extend(prevDesc.cipher.wraps);
+    if (!bodyWraps) return null;
+    const out: SectionDescriptor = {
+      ...prevDesc,
+      cipher: { ...prevDesc.cipher, wraps: bodyWraps },
+    };
+    if (prevDesc.title_cipher) {
+      const titleWraps = extend(prevDesc.title_cipher.wraps);
+      if (!titleWraps) return null;
+      (out as { title_cipher?: TitleCipher }).title_cipher = {
+        ...prevDesc.title_cipher,
+        wraps: titleWraps,
+      };
+    }
+    return out;
+  } finally {
+    ownerSk.fill(0);
+  }
+}
+
+/**
  * Cheap reseal — ADD recipients to a section WITHOUT re-encrypting its body.
  * Recovers the section's DEK by unwrapping the subject's own wrap, then re-wraps
  * that same DEK to the full new recipient set. The body ciphertext (the blob) is
@@ -324,7 +388,8 @@ function recipientLabelsEqual(cipher: SectionCipher | undefined, recipients: rea
  * Returns null — so the caller falls back to a full re-encrypt — when the body
  * isn't content-addressed yet (legacy, no `blob_sha`) or the subject's own wrap
  * can't be recovered. Use ONLY when recipients GREW (a grant); a removal
- * (revocation) must rotate the DEK, which this does not do.
+ * (revocation) must rotate the DEK, which this does not do. (Rotate-mode only —
+ * the additive default path uses appendWrapsToSection instead.)
  */
 function rewrapSectionGrant(
   prevDesc: SectionDescriptor,
@@ -667,10 +732,29 @@ export interface OwnerPatchArgs {
    *  `title_cipher`, so the owner supplies them from the already-decrypted index
    *  to evaluate `#tag=` grants on reseal). Keyed by `section_id`. */
   readonly carriedSelfTags?: ReadonlyMap<string, readonly string[]>;
-  /** Fetch a carried section's plaintext — invoked ONLY when its recipient set
-   *  changed vs the predecessor and it must be re-encrypted to the new
-   *  recipients. Never called for an ordinary edit with unchanged grants. */
+  /** Fetch a carried section's plaintext — in `rotate` mode only: invoked when a
+   *  carried section's recipient set shrank and it must be re-encrypted under a
+   *  fresh DEK. Never called in `additive` mode (the default), nor for an
+   *  ordinary edit with unchanged grants. */
   readonly fetchBody?: (zone: SphereName, sectionId: string) => Promise<Section>;
+  /**
+   * Recipient-reconciliation policy for CARRIED (untouched) sections:
+   *
+   *  - `"additive"` (default) — a normal publication NEVER removes a recipient:
+   *    stored wraps are kept verbatim (a revoked delegate's residual wrap is
+   *    harmless — the server gates its reads), and newly-covered delegates are
+   *    APPENDED via a cheap DEK re-wrap (zero re-encryption, zero blob upload).
+   *    This is what keeps grants + edits unblocked when revoked wraps linger.
+   *  - `"rotate"` — the explicit hard-cut: a carried section whose recipient set
+   *    shrank is re-encrypted under a fresh DEK (`fetchBody` required), cutting
+   *    removed delegates cryptographically. Reserved for the user-facing
+   *    "Rotate keys" action.
+   *
+   * EDITED sections (upserts) are unaffected by this knob: their content
+   * re-encryption is forced anyway, so they always resync recipients from the
+   * current active grants (drops dead wraps, picks up newly-matching grants).
+   */
+  readonly resealMode?: "additive" | "rotate";
   readonly now?: Date;
 }
 
@@ -764,11 +848,39 @@ export async function patchEditionV03Owner(args: OwnerPatchArgs): Promise<Author
         descriptors.push(carryForwardSection(d, args.prev.getBlob, blobs));
         continue;
       }
-      // Recipients changed. A GRANT (no recipient removed) re-wraps the existing
-      // DEK to the new set — body ciphertext / blob_sha unchanged, blob carried
-      // forward with zero upload. A removal (revocation) must rotate the DEK, so
-      // it falls through to a full re-encrypt.
+
       const prevLabels = new Set((d.cipher?.wraps ?? []).map((w) => w.recipient));
+
+      if ((args.resealMode ?? "additive") === "additive") {
+        // ADDITIVE (default): never remove a recipient during a normal publish.
+        // Stored wraps (revoked residue included) are kept verbatim; delegates
+        // newly covered by the active grants are APPENDED via a cheap re-wrap.
+        // A pure shrink carries the section completely untouched — this is the
+        // P0 fix: no fetchBody, no re-encryption, the publish can't jam on a
+        // lingering revoked wrap.
+        const newOnes = recipients.filter((r) => !prevLabels.has(r.didUrl));
+        const carried = carryForwardSection(d, args.prev.getBlob, blobs);
+        if (newOnes.length === 0) {
+          descriptors.push(carried);
+          continue;
+        }
+        const appended = appendWrapsToSection(
+          carried,
+          newOnes,
+          args.identity,
+          args.subjectDid,
+          zone as "circle" | "self",
+        );
+        // Owner wrap unrecoverable → carry as-is; the new grant seals into this
+        // section on its next edit or via an explicit rotate.
+        descriptors.push(appended ?? carried);
+        continue;
+      }
+
+      // ROTATE (explicit hard-cut): a GRANT (no recipient removed) re-wraps the
+      // existing DEK to the new set — body ciphertext / blob_sha unchanged, blob
+      // carried forward with zero upload. A removal (revocation) must rotate the
+      // DEK, so it falls through to a full re-encrypt.
       const grantOnly = [...prevLabels].every((l) => recipients.some((r) => r.didUrl === l));
       if (grantOnly) {
         const rewrapped = rewrapSectionGrant(

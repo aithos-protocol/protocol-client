@@ -416,6 +416,13 @@ export interface PublishV03OwnerArgs {
    * reseal" deterministic instead of racing the index settle.
    */
   readonly extraGrantMandates?: readonly SignedMandate[];
+  /**
+   * Recipient policy for CARRIED sections (see OwnerPatchArgs.resealMode):
+   * `"additive"` (default) never removes a recipient — revoked residue stays,
+   * new grants are appended cheaply; `"rotate"` re-encrypts shrunken sections
+   * (the explicit "Rotate keys" hard-cut, requires `fetchBody`).
+   */
+  readonly resealMode?: "additive" | "rotate";
 }
 
 export interface PublishV03Result {
@@ -501,6 +508,7 @@ export async function publishEthosEditionV03Owner(args: PublishV03OwnerArgs): Pr
           patch: args.patch,
           ...(args.carriedSelfTags ? { carriedSelfTags: args.carriedSelfTags } : {}),
           ...(args.fetchBody ? { fetchBody: args.fetchBody } : {}),
+          ...(args.resealMode ? { resealMode: args.resealMode } : {}),
         })
       : // FULL: re-author every zone from the supplied section lists (first
         // edition, v0.2 migration, or an explicit whole-bundle replace).
