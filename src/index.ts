@@ -20,7 +20,10 @@
 //   - `Manifest`         → types.ts (wire-format). crypto/manifest's authoring
 //                          structure stays internal; its builders are exported.
 
-export const VERSION = "0.1.0-alpha.14";
+// ⚠️ Keep in sync with package.json "version" on every release (the exported
+// VERSION had drifted to alpha.14 while the package was alpha.37 — consumers
+// branching on this got stale info). A release script should bump both.
+export const VERSION = "0.1.0-alpha.37";
 
 // --- API client (JSON-RPC 2.0 to api.aithos.be) ---
 export * from "./api.js";
