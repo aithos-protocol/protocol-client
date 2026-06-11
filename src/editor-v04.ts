@@ -170,15 +170,30 @@ export async function loadEthosIndexV04(
   delegate?: DelegateReaderArgs,
 ): Promise<EthosV04Snapshot> {
   const auth = readAuthFor(did, owner, delegate);
+  const shardShasOnly: string[] = [];
   const shas: string[] = [];
   for (const z of SPHERES) {
     const ref = manifest.zones[z];
     if (!ref) continue;
     shas.push(...ref.shard_shas);
+    shardShasOnly.push(...ref.shard_shas);
     if (auth && ref.keyring_sha) shas.push(ref.keyring_sha);
     if (auth && ref.extrawraps_sha) shas.push(ref.extrawraps_sha);
   }
-  const objs = await fetchObjects(did, shas, auth);
+  let objs: Map<string, unknown>;
+  try {
+    objs = await fetchObjects(did, shas, auth);
+  } catch (e) {
+    // A dead credential (revoked mandate / expired grant: -32041/-32042/-32010)
+    // must DEMOTE to the anonymous surface, not throw — the v0.3 contract:
+    // titles render, nothing decrypts, the server keeps gating the bodies.
+    const code = (e as { code?: number }).code;
+    if (code === -32041 || code === -32042 || code === -32010) {
+      objs = await fetchObjects(did, shardShasOnly, undefined);
+    } else {
+      throw e;
+    }
+  }
 
   const shards = { public: [], circle: [], self: [] } as Record<SphereName, ZoneShardV04[]>;
   const keyrings: Partial<Record<SphereName, KeyRingV04Pc>> = {};
