@@ -104,10 +104,11 @@ export function writeEndpoint(): string {
   return `${getEndpoints().api}/mcp/primitives/write`;
 }
 
-/** Converse endpoint (zero-inference MCP): `${api}/mcp/converse`. */
-export function converseEndpoint(): string {
-  return `${getEndpoints().api}/mcp/converse`;
-}
+// NOTE: `converseEndpoint()` was retired in alpha.36 (P6.4 of
+// PLAN-MCP-UNIFICATION-2026-06): the platform `/mcp/converse` scaffold
+// stays DORMANT — spec §12 is the behavioral reference of the LOCAL MCP
+// server (`@aithos/mcp` voice/introduce/briefing), not a server endpoint.
+// Don't reintroduce a helper here.
 
 // NOTE: `computeInvokeEndpoint()` was retired in alpha.10 alongside the
 // move of compute logic to `@aithos/sdk`. The `compute` field on

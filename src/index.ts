@@ -52,7 +52,6 @@ export {
   getEndpoints,
   configureEndpoints,
   resetEndpoints,
-  converseEndpoint,
   readEndpoint,
   writeEndpoint,
 } from "./endpoints.js";

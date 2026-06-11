@@ -16,7 +16,6 @@ import {
   DEFAULT_ENDPOINTS,
   _resetEndpoints,
   _setEndpoints,
-  converseEndpoint,
   getEndpoints,
   readEndpoint,
   writeEndpoint,
@@ -47,7 +46,6 @@ test("URL builders compose the correct paths against defaults", () => {
   _resetEndpoints();
   assert.equal(readEndpoint(), "https://api.aithos.be/mcp/primitives/read");
   assert.equal(writeEndpoint(), "https://api.aithos.be/mcp/primitives/write");
-  assert.equal(converseEndpoint(), "https://api.aithos.be/mcp/converse");
 });
 
 /* -------------------------------------------------------------------------- */
