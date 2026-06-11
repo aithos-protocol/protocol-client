@@ -17,7 +17,7 @@ import {
   type ShardEntryV04,
   type ZoneRefV04,
   type ZoneShardV04,
-} from "@aithos/protocol-core";
+} from "@aithos/protocol-core/bundle-v04";
 
 import type { StoredIdentity } from "./storage-types.js";
 import { browserIdentityFromStored } from "./crypto/identity.js";

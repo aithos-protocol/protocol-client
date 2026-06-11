@@ -24,7 +24,7 @@ import {
   type TitleCipherV2,
   type ZoneRefV04,
   type ZoneShardV04,
-} from "@aithos/protocol-core";
+} from "@aithos/protocol-core/bundle-v04";
 
 import { base64url, base64urlDecode, bytesToHex } from "./encoding.js";
 import { canonicalize } from "./canonical.js";
