@@ -1,6 +1,6 @@
 {
   "name": "@aithos/protocol-client",
-  "version": "0.1.0-alpha.36",
+  "version": "0.1.0-alpha.37",
   "description": "Aithos protocol client \u2014 env-agnostic TypeScript implementation of signed identities, mandates, and ethos editions.",
   "keywords": [
     "aithos",
