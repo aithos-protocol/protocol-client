@@ -724,7 +724,12 @@ export async function publishEthosEditionV03Delegate(
     prefetchLegacyBlobs(did, prevManifest, readAuth),
   ]);
   const didJson = new TextEncoder().encode(JSON.stringify(didDoc, null, 2) + "\n");
-  const ownerZonePubkey = ownerZoneKexPubkey(didDoc, did, delegate.actorSphere);
+  // public authoring is plaintext — no owner kex to seal into (and the DID
+  // document has no `#public-kex` entry to extract anyway).
+  const ownerZonePubkey =
+    delegate.actorSphere === "public"
+      ? undefined
+      : ownerZoneKexPubkey(didDoc, did, delegate.actorSphere);
 
   const { manifest, blobs } = patchEditionV03Delegate({
     delegate,
@@ -732,7 +737,7 @@ export async function publishEthosEditionV03Delegate(
     subjectHandle: handle,
     displayName: displayName ?? handle,
     didJson,
-    ownerZonePubkey,
+    ...(ownerZonePubkey ? { ownerZonePubkey } : {}),
     prev: {
       manifest: prevManifest,
       getBlob: (file) => {

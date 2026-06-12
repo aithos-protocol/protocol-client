@@ -552,8 +552,11 @@ export interface DelegateAuthorV03 {
   readonly seed: Uint8Array;
   /** The mandate authorising this write — recorded as `authorized_by`. */
   readonly mandateId: string;
-  /** The mandate's actor sphere — the only zone the delegate may (re)author. */
-  readonly actorSphere: "circle" | "self";
+  /** The mandate's actor sphere — the only zone the delegate may (re)author.
+   *  `public` authors PLAINTEXT sections (no recipients, no owner kex): the
+   *  authorization is pure policy, enforced server-side per section via
+   *  `coversOperation` on the mandate's verb-scopes. */
+  readonly actorSphere: "public" | "circle" | "self";
 }
 
 /** Recipients for a delegate-authored section: the owner sphere + the delegate itself (§3.5.2′). */
@@ -605,8 +608,10 @@ export interface DelegatePatchArgs {
   readonly subjectHandle: string;
   readonly displayName: string;
   readonly didJson: Uint8Array;
-  /** The subject's `#${actorSphere}-kex` X25519 pubkey (from {@link ownerZoneKexPubkey}). */
-  readonly ownerZonePubkey: Uint8Array;
+  /** The subject's `#${actorSphere}-kex` X25519 pubkey (from {@link ownerZoneKexPubkey}).
+   *  REQUIRED for the encrypted spheres (circle/self); omitted for `public`
+   *  (plaintext authoring needs no sealing recipient). */
+  readonly ownerZonePubkey?: Uint8Array;
   /** Predecessor edition + a blob fetcher (carry-forward source). */
   readonly prev: { readonly manifest: ManifestV03; readonly getBlob: (file: string) => Uint8Array };
   /** Changes to the delegate's actor sphere (upserts provide full sections). */
@@ -630,7 +635,13 @@ export function patchEditionV03Delegate(args: DelegatePatchArgs): AuthoredV03 {
 
   const editionVersion = allocEditionVersion(now, prev.edition.version);
   const bundleId = `urn:aithos:${args.subjectHandle}:${editionVersion}`;
-  const recipients = delegateZoneRecipients(args.ownerZonePubkey, args.subjectDid, zone, args.delegate);
+  const encrypted = zone !== "public";
+  if (encrypted && !args.ownerZonePubkey) {
+    throw new Error(`ownerZonePubkey required to author the encrypted "${zone}" sphere`);
+  }
+  const recipients = encrypted
+    ? delegateZoneRecipients(args.ownerZonePubkey!, args.subjectDid, zone as "circle" | "self", args.delegate)
+    : [];
   const indexEncrypted = ZONE_INDEX_ENCRYPTED[zone];
 
   const zoneEntries: Partial<Record<SphereName, BundleZoneV2>> = {};
@@ -657,7 +668,7 @@ export function patchEditionV03Delegate(args: DelegatePatchArgs): AuthoredV03 {
       if (deletes.has(d.section_id)) continue;
       const up = upserts.get(d.section_id);
       if (up) {
-        const w = writeSection({ zone, encrypted: true, indexEncrypted, subjectDid: args.subjectDid, recipients }, up);
+        const w = writeSection({ zone, encrypted, indexEncrypted, subjectDid: args.subjectDid, recipients }, up);
         blobs.set(w.descriptor.blob_sha!, w.blob);
         descriptors.push(w.descriptor);
         upserts.delete(d.section_id);
@@ -668,14 +679,14 @@ export function patchEditionV03Delegate(args: DelegatePatchArgs): AuthoredV03 {
     // New sections (upserts not present in prev), in input order.
     for (const s of args.patch.upserts ?? []) {
       if (!upserts.has(s.id)) continue; // already applied above
-      const w = writeSection({ zone, encrypted: true, indexEncrypted, subjectDid: args.subjectDid, recipients }, s);
+      const w = writeSection({ zone, encrypted, indexEncrypted, subjectDid: args.subjectDid, recipients }, s);
       blobs.set(w.descriptor.blob_sha!, w.blob);
       descriptors.push(w.descriptor);
     }
 
     zoneEntries[z] = {
       format_version: "v2",
-      encrypted: true,
+      encrypted,
       ...(indexEncrypted ? { index_encrypted: true } : {}),
       sections: descriptors,
     };
