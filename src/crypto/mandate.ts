@@ -286,7 +286,10 @@ function validateScopesAgainstSphere(
         s === "compute.invoke" ||
         // Data scopes (`data.<collection>.<action>`) are sphere-neutral and
         // permitted under every sphere — keep in lockstep with protocol-core.
-        s.startsWith("data.");
+        s.startsWith("data.") ||
+        // Connector scopes (`mcp.<server>.<…>`) are likewise sphere-neutral: the
+        // access axis is the connector (gated at the gateway), not an ethos zone.
+        s.startsWith("mcp.");
       if (!ok) {
         throw new Error(`scope ${s} is not permitted for the public sphere`);
       }

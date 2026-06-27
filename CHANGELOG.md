@@ -5,6 +5,13 @@ All notable changes to `@aithos/protocol-client` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this package adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-alpha.40] — 2026-06-26
+
+- `mcp.*` connector scopes accepted under the public sphere (lockstep with
+  protocol-core 0.11.4): the access axis is the connector, gated at the gateway,
+  not an ethos zone. Lets the consent mint a connector grant in the `#public`
+  mandate.
+
 ## [0.1.0-alpha.36] — 2026-06-11
 
 - REMOVED the orphan `converseEndpoint()` (P6.4 of
