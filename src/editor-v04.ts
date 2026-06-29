@@ -743,6 +743,116 @@ export async function migrateV03ToV04(args: MigrateArgs): Promise<{ manifest: Ma
 }
 
 /* -------------------------------------------------------------------------- */
+/*  First edition v0.4 from scratch (owner, height=1)                         */
+/* -------------------------------------------------------------------------- */
+
+export interface CreateEditionV04Args {
+  readonly did: string;
+  readonly owner: StoredIdentity;
+  readonly handle: string;
+  readonly displayName: string;
+  /** Staged sections per zone. The public zone MUST be non-empty (height=1
+   *  invariant); callers stage an `aithos-init` sentinel when authoring only
+   *  encrypted zones. */
+  readonly sections: Partial<Record<SphereName, readonly Section[]>>;
+  /** Canonical did.json bytes — `JSON.stringify(doc, null, 2) + "\n"`. Anchors
+   *  `integrity.sha256_of_did_json`. */
+  readonly didJson: Uint8Array;
+  /** Optional initial zone grants (sealed into the keyring at creation). */
+  readonly zoneGrants?: Partial<Record<"circle" | "self", readonly ZoneGrantTarget[]>>;
+}
+
+/**
+ * Author and publish a brand-new v0.4 edition at height=1 (no predecessor:
+ * `prev_hash = null`, `supersedes = null`). This is the v0.4 analogue of the
+ * v0.3 first-edition author (`authorBundleV03`) and the missing piece for
+ * "v0.4 by default at creation": onboarding and the SDK's first-edition path
+ * call this instead of authoring v0.3. The backend accepts a height=1 v0.4
+ * edition directly, so this never touches the v0.3→v0.4 migration path.
+ */
+export async function createEditionV04Owner(
+  args: CreateEditionV04Args,
+): Promise<{ manifest: ManifestV04; height: number }> {
+  const { did, owner, sections, didJson } = args;
+  const up: UploadSet = { objects: new Map(), blobs: new Map() };
+  const zones = {} as Record<SphereName, ZoneRefV04>;
+
+  for (const z of SPHERES) {
+    const list = sections[z] ?? [];
+    const isEnc = z !== "public";
+    const zk = isEnc ? generateZoneKey() : undefined;
+    const entries: ShardEntryV04[] = [];
+
+    for (const s of list) {
+      if (z === "public") {
+        const md = new TextEncoder().encode(renderSectionMarkdown(s));
+        const blobSha = bytesToHex(sha256(md));
+        up.blobs.set(blobSha, md);
+        entries.push({
+          section_id: s.id,
+          title: s.title,
+          ...(s.tags ? { tags: [...s.tags] } : {}),
+          blob_sha: blobSha,
+          sha256_of_plaintext: blobSha,
+          gamma_ref: s.gamma_ref,
+          approx_size_bytes: md.length,
+        } as ShardEntryV04);
+      } else {
+        const dek = new Uint8Array(randomBytes(32));
+        const md = new TextEncoder().encode(renderSectionMarkdown(s));
+        const plainSha = bytesToHex(sha256(md));
+        const encd = encryptBodyV04(dek, did, s.id, md);
+        const blobSha = bytesToHex(sha256(encd.blob));
+        up.blobs.set(blobSha, encd.blob);
+        entries.push({
+          section_id: s.id,
+          ...(z === "circle" ? { title: s.title, ...(s.tags ? { tags: [...s.tags] } : {}) } : {}),
+          ...(z === "self" ? { title_cipher: encryptTitleV2pc(dek, did, s.id, { title: s.title, ...(s.tags ? { tags: [...s.tags] } : {}) }) } : {}),
+          blob_sha: blobSha,
+          sha256_of_plaintext: plainSha,
+          gamma_ref: s.gamma_ref,
+          n: encd.n,
+          approx_size_bytes: encd.blob.length,
+          enc_dek: sealDekUnderZoneKey(zk!, dek, did, z, s.id),
+        } as ShardEntryV04);
+      }
+    }
+
+    const { shards, shardCount } = buildShards(z, entries);
+    const shardShas = shards.map((sh) => addObject(up, sh));
+    let keyringSha: string | undefined;
+    if (isEnc && zk) {
+      const wraps = [
+        sealZoneKeyTo(zk, ownerKexLabel(did, z), x25519.getPublicKey(ownerKexSecret(owner, z as "circle" | "self"))),
+        ...(args.zoneGrants?.[z as "circle" | "self"] ?? []).map((g) => sealZoneKeyTo(zk, g.recipient, g.x25519PublicKey)),
+      ].sort((a, b) => (a.recipient < b.recipient ? -1 : 1));
+      keyringSha = addObject(up, { object: "keyring", v: 1, zone: z, kid: zk.kid, wraps } satisfies KeyRingV04Pc);
+    }
+    zones[z] = zoneRefOf(shardShas, shardCount, entries.length, keyringSha, undefined);
+  }
+
+  const day = new Date().toISOString().slice(0, 10).replace(/-/g, ".");
+  const manifest = signManifestV04Pc(
+    buildManifestV04({
+      subjectDid: did,
+      handle: args.handle,
+      displayName: args.displayName,
+      bundleId: "bundle_" + bytesToHex(randomBytes(8)),
+      editionVersion: `${day}-1`,
+      createdAt: new Date().toISOString(),
+      supersedes: null,
+      prevHash: null,
+      height: 1,
+      zones,
+      sha256OfDidJson: bytesToHex(sha256(didJson)),
+    }),
+    { kind: "owner", subjectDid: did, publicSphereSeed: hexSeed(owner, "public") },
+  );
+  await postPublishV04(did, manifest, up, { kind: "owner", owner });
+  return { manifest, height: manifest.edition.height };
+}
+
+/* -------------------------------------------------------------------------- */
 /*  Delegate write                                                            */
 /* -------------------------------------------------------------------------- */
 

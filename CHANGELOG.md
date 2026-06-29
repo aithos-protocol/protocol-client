@@ -5,6 +5,17 @@ All notable changes to `@aithos/protocol-client` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this package adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0-alpha.41] — 2026-06-29
+
+- NEW `createEditionV04Owner` — author and publish a brand-new v0.4 edition at
+  height=1 (`prev_hash = null`, `supersedes = null`), the v0.4 analogue of the
+  v0.3 first-edition author. The missing primitive for "v0.4 by default at
+  creation": no predecessor, so it never touches the v0.3→v0.4 migration path.
+- CHANGE `runOnboarding` now authors the first edition **directly in v0.4** via
+  `createEditionV04Owner` (was v0.3). Brand-new accounts are born v0.4.
+  `OnboardResult.manifest` is now a `ManifestV04`. Validated end-to-end on dev:
+  onboarding → v0.4 height=1, readable, and extensible with circle/self writes.
+
 ## [0.1.0-alpha.40] — 2026-06-26
 
 - `mcp.*` connector scopes accepted under the public sphere (lockstep with

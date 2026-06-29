@@ -18,9 +18,10 @@ import {
   type BrowserIdentity,
   type DidDocument,
 } from "./crypto/identity.js";
-import { authorBundleV03 } from "./crypto/bundle-v03-write.js";
-import { type ManifestV03 } from "./crypto/bundle-v03.js";
 import { addSectionToList } from "./editor.js";
+import { createEditionV04Owner } from "./editor-v04.js";
+import type { StoredIdentity } from "./storage-types.js";
+import type { ManifestV04 } from "@aithos/protocol-core";
 import { buildSignedEnvelope } from "./crypto/envelope.js";
 import { writeEndpoint } from "./endpoints.js";
 
@@ -35,7 +36,7 @@ export interface OnboardArgs {
 export interface OnboardResult {
   readonly identity: BrowserIdentity;
   readonly didDocument: DidDocument;
-  readonly manifest: ManifestV03;
+  readonly manifest: ManifestV04;
   readonly recoveryBlob: Blob;
 }
 
@@ -92,7 +93,10 @@ export async function runOnboarding(args: OnboardArgs): Promise<OnboardResult> {
     "publish_identity",
   );
 
-  /* ---- 4. first edition (v0.3 per-section) ---- */
+  /* ---- 4+5. first edition (v0.4 per-section, content-addressed) + publish ---- */
+  // v0.4 is the latest Ethos format and the platform default — author the very
+  // first edition directly in v0.4 (height=1, no predecessor), so brand-new
+  // accounts are born v0.4 without ever touching the v0.3→v0.4 migration path.
   // Same did-hash convention the server enforces: JSON.stringify(doc, null, 2)+"\n".
   const didJson = new TextEncoder().encode(JSON.stringify(signedDoc, null, 2) + "\n");
   const publicSections = addSectionToList([], {
@@ -100,34 +104,39 @@ export async function runOnboarding(args: OnboardArgs): Promise<OnboardResult> {
     body: args.publicBody,
     ...(args.tags && args.tags.length > 0 ? { tags: args.tags } : {}),
   });
-  const { manifest, blobs } = authorBundleV03({
-    identity,
-    subjectDid: identity.did,
-    subjectHandle: identity.handle,
+  const owner: StoredIdentity = {
+    version: "0.1.0",
+    handle: identity.handle,
     displayName: identity.displayName,
-    didJson,
-    zones: { public: publicSections },
-  });
-
-  /* ---- 5. POST publish_ethos_edition (v0.3: per-section blobs) ---- */
-  const blobsParam: Record<string, { bytes_base64: string }> = {};
-  for (const [file, bytes] of blobs) {
-    blobsParam[file] = { bytes_base64: bytesToBase64Std(bytes) };
+    did: identity.did,
+    seeds: {
+      root: bytesToHexLocal(identity.root.seed),
+      public: bytesToHexLocal(identity.public.seed),
+      circle: bytesToHexLocal(identity.circle.seed),
+      self: bytesToHexLocal(identity.self.seed),
+      ...(identity.data ? { data: bytesToHexLocal(identity.data.seed) } : {}),
+    },
+    savedAt: new Date().toISOString(),
+  };
+  let manifest: ManifestV04;
+  try {
+    const res = await createEditionV04Owner({
+      did: identity.did,
+      owner,
+      handle: identity.handle,
+      displayName: identity.displayName,
+      sections: { public: publicSections },
+      didJson,
+    });
+    manifest = res.manifest;
+  } catch (e) {
+    const err = e as { message?: string; code?: number; data?: Record<string, unknown> };
+    throw new OnboardError(
+      "publish_ethos_edition",
+      err.message ?? "publish_ethos_edition failed",
+      err.code !== undefined ? { code: err.code, ...(err.data ?? {}) } : err.data,
+    );
   }
-  const editionParams = { manifest, blobs: blobsParam };
-  const editionEnv = buildSignedEnvelope({
-    iss: identity.did,
-    aud: writeEndpoint(),
-    method: "aithos.publish_ethos_edition",
-    verificationMethod: `${identity.did}#public`,
-    params: editionParams,
-    signer: identity.public,
-  });
-  await callWrite(
-    "aithos.publish_ethos_edition",
-    { ...editionParams, _envelope: editionEnv },
-    "publish_ethos_edition",
-  );
 
   /* ---- 6. recovery blob (plaintext v1; encrypted in a follow-up) ---- */
   const recovery = {

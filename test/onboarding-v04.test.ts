@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Mathieu Colla
 
-// runOnboarding must mint a v0.3 (per-section) first edition — previously it
-// built a v0.2 monolithic edition via buildSignedFirstEdition, which then made
-// loadEthosV03 reject the freshly-created ethos. fetch is mocked so no network.
+// runOnboarding mints a v0.4 (per-section, content-addressed) FIRST edition at
+// height=1 directly — brand-new accounts are born v0.4, never via the v0.3→v0.4
+// migration path. fetch is mocked so no network.
 
 import { test, describe, afterEach } from "node:test";
 import { strict as assert } from "node:assert";
@@ -26,7 +26,7 @@ function installMock(captureEdition: (body: any) => void) {
   }) as unknown as typeof fetch;
 }
 
-describe("runOnboarding — v0.3 first edition", () => {
+describe("runOnboarding — v0.4 first edition", () => {
   afterEach(() => {
     if (savedFetch) {
       globalThis.fetch = savedFetch;
@@ -35,7 +35,7 @@ describe("runOnboarding — v0.3 first edition", () => {
     _resetEndpoints();
   });
 
-  test("publishes an aithos:0.3.0 manifest with per-section blobs", async () => {
+  test("publishes an aithos:0.4.0 height=1 edition with content-addressed objects", async () => {
     let edition: any = null;
     installMock((b) => (edition = b));
 
@@ -47,21 +47,24 @@ describe("runOnboarding — v0.3 first edition", () => {
       tags: ["demo"],
     });
 
-    // Returned manifest is v0.3.
-    assert.equal(r.manifest.aithos, "0.3.0");
+    // Returned manifest is v0.4.
+    assert.equal(r.manifest.aithos, "0.4.0");
 
-    // The posted edition is v0.3, height 1, with per-section blobs (not the
-    // legacy per-zone `zones` payload).
+    // The posted edition is a v0.4 first edition: height 1, no predecessor.
     assert.ok(edition, "publish_ethos_edition was called");
-    assert.equal(edition.params.manifest.aithos, "0.3.0");
-    assert.equal(edition.params.manifest.edition.height, 1);
-    assert.equal(edition.params.manifest.edition.prev_hash, null);
-    assert.ok(edition.params.blobs, "per-section blobs present");
-    assert.equal(edition.params.zones, undefined, "no legacy per-zone payload");
-    assert.deepEqual(
-      edition.params.manifest.zones.public.sections.map((s: any) => s.title),
-      ["Hi"],
-    );
+    const m = edition.params.manifest;
+    assert.equal(m.aithos, "0.4.0");
+    assert.equal(m.edition.height, 1);
+    assert.equal(m.edition.prev_hash, null);
+    assert.equal(m.edition.supersedes, null);
+
+    // v0.4 uploads content-addressed objects (shards) + section blobs; there is
+    // no legacy per-zone `zones.<z>.sections` payload — the public zone is a ref.
+    assert.ok(edition.params.objects, "content-addressed objects present");
+    assert.ok(edition.params.blobs, "section blobs present");
+    assert.ok(m.zones.public.shard_shas?.length > 0, "public zone is a v0.4 ref");
+    assert.equal(m.zones.public.sections, undefined, "no legacy per-zone payload");
+
     // Owner first edition is signed under #public.
     assert.match(edition.params._envelope.proof.verificationMethod, /#public$/);
   });
